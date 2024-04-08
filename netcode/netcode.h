@@ -137,6 +137,9 @@ struct netcode_client_config_t
     int override_send_and_receive;
     void (*send_packet_override)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
     int (*receive_packet_override)(void*,struct netcode_address_t*,uint8_t*,int);
+
+	bool (*auxiliary_command_function)(void*,uint8_t*,int);
+	void * auxiliary_command_context;
 };
 
 void netcode_default_client_config( struct netcode_client_config_t * config );
@@ -204,6 +207,9 @@ struct netcode_server_config_t
     int override_send_and_receive;
     void (*send_packet_override)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
     int (*receive_packet_override)(void*,struct netcode_address_t*,uint8_t*,int);
+
+	bool (*auxiliary_command_function)(void*,struct netcode_address_t*,uint8_t*,int);
+	void * auxiliary_command_context;
 };
 
 void netcode_default_server_config( struct netcode_server_config_t * config );

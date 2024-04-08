@@ -627,6 +627,24 @@ void netcode_socket_destroy( struct netcode_socket_t * socket )
     }
 }
 
+int netcode_socket_set_ttl( struct netcode_socket_t * s, int ttl )
+{
+	return setsockopt(s->handle, IPPROTO_IP, IP_TTL, (const char*)(&ttl), sizeof(ttl));
+}
+
+int netcode_socket_get_ttl(struct netcode_socket_t * s)
+{
+	int ttl;
+	socklen_t len = sizeof(ttl);
+	int result = getsockopt(s->handle, IPPROTO_IP, IP_TTL, (char*)(&ttl), &len);
+
+	(void)result;
+
+	netcode_assert(0 == result);
+
+	return ttl;
+}
+
 int netcode_socket_create( struct netcode_socket_t * s, struct netcode_address_t * address, int send_buffer_size, int receive_buffer_size )
 {
     netcode_assert( s );
@@ -3057,6 +3075,16 @@ void netcode_client_receive_packets( struct netcode_client_t * client )
             if ( packet_bytes == 0 )
                 break;
 
+            if ( client->config.auxiliary_command_function != NULL ) {
+                if ( client->config.auxiliary_command_function(
+                            client->config.auxiliary_command_context, 
+                            packet_data, 
+                            packet_bytes ))
+                {
+                    continue;
+                }
+            }
+
             uint64_t sequence;
             void * packet = netcode_read_packet( packet_data, 
                                                  packet_bytes, 
@@ -4087,21 +4115,7 @@ void netcode_server_disconnect_client_internal( struct netcode_server_t * server
         server->config.connect_disconnect_callback( server->config.callback_context, client_index, 0 );
     }
 
-    if ( send_disconnect_packets )
-    {
-        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server sent disconnect packets to client %d\n", client_index );
-
-        int i;
-        for ( i = 0; i < NETCODE_NUM_DISCONNECT_PACKETS; ++i )
-        {
-            netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server sent disconnect packet %d\n", i );
-
-            struct netcode_connection_disconnect_packet_t packet;
-            packet.packet_type = NETCODE_CONNECTION_DISCONNECT_PACKET;
-
-            netcode_server_send_client_packet( server, &packet, client_index );
-        }
-    }
+    (void)send_disconnect_packets;
 
     while ( 1 )
     {
@@ -4239,21 +4253,6 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
     if ( netcode_read_connect_token_private( packet->connect_token_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES, &connect_token_private ) != NETCODE_OK )
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection request. failed to read connect token\n" );
-        return;
-    }
-
-    int found_server_address = 0;
-    int i;
-    for ( i = 0; i < connect_token_private.num_server_addresses; ++i )
-    {
-        if ( netcode_address_equal( &server->address, &connect_token_private.server_addresses[i] ) )
-        {
-            found_server_address = 1;
-        }
-    }
-    if ( !found_server_address )
-    {   
-        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection request. server address not in connect token whitelist\n" );
         return;
     }
 
@@ -4615,6 +4614,17 @@ void netcode_server_read_and_process_packet( struct netcode_server_t * server,
 
     if ( packet_bytes <= 1 )
         return;
+
+    if ( server->config.auxiliary_command_function != NULL ) {
+		if (server->config.auxiliary_command_function(
+			server->config.auxiliary_command_context, 
+			from, 
+			packet_data, 
+			packet_bytes
+		)) {
+			return;
+		}
+	}
 
     uint64_t sequence;
 

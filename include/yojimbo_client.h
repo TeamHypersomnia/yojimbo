@@ -81,6 +81,8 @@ namespace yojimbo
 
         const Address & GetAddress() const { return m_boundAddress; }
 
+		netcode_client_t* GetClientDetail() const { return m_client; }
+
     private:
 
         bool GenerateInsecureConnectToken( uint8_t * connectToken,

@@ -82,14 +82,15 @@ namespace yojimbo
             reliable_config.max_fragments = m_config.maxPacketFragments;
             reliable_config.fragment_size = m_config.packetFragmentSize; 
             reliable_config.ack_buffer_size = m_config.ackedPacketsBufferSize;
+			reliable_config.sent_packets_buffer_size = m_config.receivedPacketsBufferSize;
             reliable_config.received_packets_buffer_size = m_config.receivedPacketsBufferSize;
             reliable_config.fragment_reassembly_buffer_size = m_config.packetReassemblyBufferSize;
             reliable_config.rtt_smoothing_factor = m_config.rttSmoothingFactor;
             reliable_config.transmit_packet_function = BaseServer::StaticTransmitPacketFunction;
             reliable_config.process_packet_function = BaseServer::StaticProcessPacketFunction;
-            reliable_config.allocator_context = &GetGlobalAllocator();
-            reliable_config.allocate_function = BaseServer::StaticAllocateFunction;
-            reliable_config.free_function = BaseServer::StaticFreeFunction;
+            reliable_config.allocator_context = nullptr;
+            reliable_config.allocate_function = nullptr;
+            reliable_config.free_function = nullptr;
             m_clientEndpoint[i] = reliable_endpoint_create( &reliable_config, m_time );
             reliable_endpoint_reset( m_clientEndpoint[i] );
         }

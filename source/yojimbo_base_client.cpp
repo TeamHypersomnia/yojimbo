@@ -155,9 +155,9 @@ namespace yojimbo
         reliable_config.rtt_smoothing_factor = m_config.rttSmoothingFactor;
         reliable_config.transmit_packet_function = BaseClient::StaticTransmitPacketFunction;
         reliable_config.process_packet_function = BaseClient::StaticProcessPacketFunction;
-        reliable_config.allocator_context = m_clientAllocator;
-        reliable_config.allocate_function = BaseClient::StaticAllocateFunction;
-        reliable_config.free_function = BaseClient::StaticFreeFunction;
+        reliable_config.allocator_context = nullptr;
+        reliable_config.allocate_function = nullptr;
+        reliable_config.free_function = nullptr;
         m_endpoint = reliable_endpoint_create( &reliable_config, m_time );
         reliable_endpoint_reset( m_endpoint );
     }

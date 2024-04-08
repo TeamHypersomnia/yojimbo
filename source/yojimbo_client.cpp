@@ -71,7 +71,7 @@ namespace yojimbo
         return netcode_generate_connect_token( numServerAddresses, 
                                                serverAddressStringPointers, 
                                                serverAddressStringPointers, 
-                                               m_config.timeout,
+                                               -1,
                                                m_config.timeout, 
                                                clientId, 
                                                m_config.protocolId, 

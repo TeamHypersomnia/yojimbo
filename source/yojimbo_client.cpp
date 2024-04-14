@@ -7,11 +7,12 @@
 
 namespace yojimbo
 {
-    Client::Client( Allocator & allocator, const Address & address, const ClientServerConfig & config, Adapter & adapter, double time ) 
+    Client::Client( Allocator & allocator, const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, client_adapter* parent ) 
         : BaseClient( allocator, config, adapter, time ), m_config( config ), m_address( address )
     {
         m_clientId = 0;
         m_client = NULL;
+		m_parent = parent;
         m_boundAddress = m_address;
     }
 

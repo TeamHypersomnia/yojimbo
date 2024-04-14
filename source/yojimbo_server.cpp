@@ -31,7 +31,7 @@
 
 namespace yojimbo
 {
-    Server::Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time ) 
+    Server::Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, server_adapter* parent ) 
         : BaseServer( allocator, config, adapter, time )
     {
         yojimbo_assert( KeyBytes == NETCODE_KEY_BYTES );
@@ -40,6 +40,7 @@ namespace yojimbo
         m_boundAddress = address;
         m_config = config;
         m_server = NULL;
+		m_parent = parent;
     }
 
     Server::~Server()

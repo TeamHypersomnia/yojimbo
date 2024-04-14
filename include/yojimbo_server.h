@@ -30,6 +30,7 @@
 #include "yojimbo_address.h"
 
 struct netcode_server_t;
+class server_adapter;
 
 namespace yojimbo
 {
@@ -41,7 +42,7 @@ namespace yojimbo
     {
     public:
 
-        Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time );
+        Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, server_adapter* );
 
         ~Server();
 
@@ -78,6 +79,7 @@ namespace yojimbo
         const Address & GetAddress() const { return m_boundAddress; }
 
 		netcode_server_t* GetServerDetail() const { return m_server; }
+		server_adapter* GetParent() const { return m_parent; }
 
     private:
 
@@ -98,6 +100,8 @@ namespace yojimbo
         Address m_address;                                  // original address passed to ctor
         Address m_boundAddress;                             // address after socket bind, eg. valid port
         uint8_t m_privateKey[KeyBytes];
+
+		server_adapter* m_parent;
     };
 }
 

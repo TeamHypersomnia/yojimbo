@@ -208,6 +208,9 @@ struct netcode_server_config_t
     void (*send_packet_override)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
     int (*receive_packet_override)(void*,struct netcode_address_t*,uint8_t*,int);
 
+    bool (*aux_send_packet)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
+    int (*aux_receive_packet)(void*,struct netcode_address_t*,uint8_t*,int);
+
 	bool (*auxiliary_command_function)(void*,struct netcode_address_t*,uint8_t*,int);
 	void * auxiliary_command_context;
 };

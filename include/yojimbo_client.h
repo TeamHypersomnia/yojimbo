@@ -30,6 +30,7 @@
 #include "yojimbo_base_client.h"
 
 struct netcode_client_t;
+class client_adapter;
 
 namespace yojimbo
 {
@@ -49,7 +50,7 @@ namespace yojimbo
             @param time The current time in seconds. See ClientInterface::AdvanceTime
          */
 
-        explicit Client( Allocator & allocator, const Address & address, const ClientServerConfig & config, Adapter & adapter, double time );
+        explicit Client( Allocator & allocator, const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, client_adapter* );
 
         ~Client();
 
@@ -82,6 +83,7 @@ namespace yojimbo
         const Address & GetAddress() const { return m_boundAddress; }
 
 		netcode_client_t* GetClientDetail() const { return m_client; }
+		client_adapter* GetParent() const { return m_parent; }
 
     private:
 
@@ -112,6 +114,8 @@ namespace yojimbo
         Address m_address;                              ///< Original address passed to ctor.
         Address m_boundAddress;                         ///< Address after socket bind, eg. with valid port
         uint64_t m_clientId;                            ///< The globally unique client id (set on each call to connect)
+
+		client_adapter* m_parent;
     };
 }
 

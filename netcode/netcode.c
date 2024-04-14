@@ -3794,6 +3794,8 @@ void netcode_default_server_config( struct netcode_server_config_t * config )
     config->send_loopback_packet_callback = NULL;
     config->override_send_and_receive = 0;
     config->send_packet_override = NULL;
+    config->aux_receive_packet = NULL;
+    config->aux_send_packet = NULL;
     config->receive_packet_override = NULL;
 };
 
@@ -4033,7 +4035,20 @@ void netcode_server_send_global_packet( struct netcode_server_t * server, void *
         }
         else if ( to->type == NETCODE_ADDRESS_IPV4 )
         {
-            netcode_socket_send_packet( &server->socket_holder.ipv4, to, packet_data, packet_bytes );
+            bool send_real_packet = true;
+
+            if ( server->config.aux_send_packet != NULL )
+            {
+                if ( server->config.aux_send_packet(server->config.callback_context, to, packet_data, packet_bytes ) )
+                {
+                    send_real_packet = false;
+                }
+            }
+
+            if ( send_real_packet )
+            {
+                netcode_socket_send_packet( &server->socket_holder.ipv4, to, packet_data, packet_bytes );
+            }
         }
         else if ( to->type == NETCODE_ADDRESS_IPV6 )
         {
@@ -4084,7 +4099,20 @@ void netcode_server_send_client_packet( struct netcode_server_t * server, void *
         {
             if ( server->client_address[client_index].type == NETCODE_ADDRESS_IPV4 )
             {
-                netcode_socket_send_packet( &server->socket_holder.ipv4, &server->client_address[client_index], packet_data, packet_bytes );
+                bool send_real_packet = true;
+
+                if ( server->config.aux_send_packet != NULL )
+                {
+                    if ( server->config.aux_send_packet(server->config.callback_context, &server->client_address[client_index], packet_data, packet_bytes ) )
+                    {
+                        send_real_packet = false;
+                    }
+                }
+
+                if ( send_real_packet )
+                {
+                    netcode_socket_send_packet( &server->socket_holder.ipv4, &server->client_address[client_index], packet_data, packet_bytes );
+                }
             }
             else if ( server->client_address[client_index].type == NETCODE_ADDRESS_IPV6 )
             {
@@ -4705,6 +4733,9 @@ void netcode_server_receive_packets( struct netcode_server_t * server )
 
                 if ( packet_bytes == 0 && server->socket_holder.ipv6.handle != 0)
                     packet_bytes = netcode_socket_receive_packet( &server->socket_holder.ipv6, &from, packet_data, NETCODE_MAX_PACKET_BYTES );
+
+                if ( packet_bytes == 0 && server->config.aux_receive_packet != NULL )
+                    packet_bytes = server->config.aux_receive_packet( server->config.callback_context, &from, packet_data, NETCODE_MAX_PACKET_BYTES );
             }
 
             if ( packet_bytes == 0 )

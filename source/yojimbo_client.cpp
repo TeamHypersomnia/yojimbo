@@ -226,6 +226,11 @@ namespace yojimbo
         netcodeConfig.callback_context              = this;
         netcodeConfig.state_change_callback         = StaticStateChangeCallbackFunction;
         netcodeConfig.send_loopback_packet_callback = StaticSendLoopbackPacketCallbackFunction;
+
+#if PLATFORM_WEB
+		/* Have to set it early to prevent socket creation */
+		netcodeConfig.override_send_and_receive = 1;
+#endif
         m_client = netcode_client_create(addressString, &netcodeConfig, GetTime());
         
         if ( m_client )

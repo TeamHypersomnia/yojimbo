@@ -69,6 +69,10 @@ namespace yojimbo
         netcodeConfig.callback_context = this;
         netcodeConfig.connect_disconnect_callback = StaticConnectDisconnectCallbackFunction;
         netcodeConfig.send_loopback_packet_callback = StaticSendLoopbackPacketCallbackFunction;
+#if PLATFORM_WEB
+		/* Have to set it early to prevent socket creation */
+        netcodeConfig.override_send_and_receive = 1;
+#endif
         
         m_server = netcode_server_create(addressString, &netcodeConfig, GetTime());
         

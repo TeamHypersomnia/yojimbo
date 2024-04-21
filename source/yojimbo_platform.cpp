@@ -196,6 +196,8 @@ double yojimbo_time()
     return double( now.QuadPart - timer_start.QuadPart ) / double( timer_frequency.QuadPart );
 }
 
+#elif defined(__EMSCRIPTEN__)
+
 #else
 
 #error unsupported platform!

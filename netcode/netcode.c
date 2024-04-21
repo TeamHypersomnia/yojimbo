@@ -5255,6 +5255,8 @@ double netcode_time()
     return current - start;
 }
 
+#elif defined(__EMSCRIPTEN__)
+
 #elif defined( _WIN32 )
 
 // windows
@@ -5284,6 +5286,8 @@ double netcode_time()
     QueryPerformanceCounter( &now );
     return ( (double) ( now.QuadPart - timer_start.QuadPart ) ) / ( (double) ( timer_frequency.QuadPart ) );
 }
+
+#elif defined(__EMSCRIPTEN__)
 
 #else
 

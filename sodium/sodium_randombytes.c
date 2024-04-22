@@ -71,13 +71,16 @@ randombytes_implementation_name(void)
 }
 
 uint32_t
+randombytes_external(void);
+
+uint32_t
 randombytes_random(void)
 {
 #ifndef __EMSCRIPTEN__
     randombytes_init_if_needed();
     return implementation->random();
 #else
-    return 0;
+    return randombytes_external();
 #endif
 }
 

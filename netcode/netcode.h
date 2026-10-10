@@ -299,6 +299,7 @@ struct netcode_server_config_t
 	bool (*auxiliary_command_function)(void*,struct netcode_address_t*,uint8_t*,int);
 	void * auxiliary_command_context;
 	int disable_disconnect_packets;
+	int accept_insecure_connect_tokens;
 };
 
 /*

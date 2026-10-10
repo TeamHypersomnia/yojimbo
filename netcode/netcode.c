@@ -1472,6 +1472,7 @@ struct netcode_connection_request_packet_t
     uint64_t connect_token_expire_timestamp;
     uint8_t connect_token_nonce[NETCODE_CONNECT_TOKEN_NONCE_BYTES];
     uint8_t connect_token_data[NETCODE_CONNECT_TOKEN_PRIVATE_BYTES];
+    int decrypted_with_insecure_key;
 };
 
 struct netcode_connection_denied_packet_t
@@ -4125,6 +4126,7 @@ void netcode_default_server_config( struct netcode_server_config_t * config )
     config->auxiliary_command_function = NULL;
     config->auxiliary_command_context = NULL;
     config->disable_disconnect_packets = 0;
+    config->accept_insecure_connect_tokens = 0;
 }
 
 struct netcode_server_t
@@ -4686,6 +4688,11 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
         return;
     }
 
+    if ( packet->decrypted_with_insecure_key )
+    {
+        memset( connect_token_private.user_data, 0, NETCODE_USER_DATA_BYTES );
+    }
+
     if ( netcode_server_find_client_index_by_address( server, from ) != -1 )
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection request. a client with this address is already connected\n" );
@@ -5073,21 +5080,80 @@ void netcode_server_read_and_process_packet( struct netcode_server_t * server,
         return;
     }
 
-    void * packet = netcode_read_packet( packet_data, 
-                                         packet_bytes, 
-                                         &sequence, 
-                                         read_packet_key, 
-                                         server->config.protocol_id, 
-                                         current_timestamp, 
-                                         server->min_connect_token_expire_timestamp, 
-                                         server->config.private_key, 
-                                         allowed_packets, 
-                                         ( client_index != -1 ) ? &server->client_replay_protection[client_index] : NULL, 
-                                         server->config.allocator_context, 
-                                         server->config.allocate_function );
+    /*
+        Hypersomnia: a server accepts the connect tokens encrypted with its own private key and,
+        when accept_insecure_connect_tokens is set, also the insecure ones clients make themselves with an all-zero key.
+        The user data of an insecure token is wiped later on, since its client wrote it itself,
+        so nothing in it can pass for what the issuer of the secure tokens vouches for.
+        A failed decrypt zeroes the buffer, hence the first attempt is made on a copy.
+    */
+
+    const int is_connection_request = packet_data[0] == NETCODE_CONNECTION_REQUEST_PACKET;
+    int decrypted_with_insecure_key = 0;
+    void * packet = NULL;
+
+    if ( is_connection_request && server->config.accept_insecure_connect_tokens && packet_bytes <= NETCODE_MAX_PACKET_BYTES )
+    {
+        uint8_t packet_copy[NETCODE_MAX_PACKET_BYTES];
+        memcpy( packet_copy, packet_data, packet_bytes );
+
+        packet = netcode_read_packet( packet_copy, 
+                                      packet_bytes, 
+                                      &sequence, 
+                                      read_packet_key, 
+                                      server->config.protocol_id, 
+                                      current_timestamp, 
+                                      server->min_connect_token_expire_timestamp, 
+                                      server->config.private_key, 
+                                      allowed_packets, 
+                                      NULL, 
+                                      server->config.allocator_context, 
+                                      server->config.allocate_function );
+
+        if ( !packet )
+        {
+            uint8_t insecure_key[NETCODE_KEY_BYTES];
+            memset( insecure_key, 0, sizeof( insecure_key ) );
+
+            packet = netcode_read_packet( packet_data, 
+                                          packet_bytes, 
+                                          &sequence, 
+                                          read_packet_key, 
+                                          server->config.protocol_id, 
+                                          current_timestamp, 
+                                          server->min_connect_token_expire_timestamp, 
+                                          insecure_key, 
+                                          allowed_packets, 
+                                          NULL, 
+                                          server->config.allocator_context, 
+                                          server->config.allocate_function );
+
+            decrypted_with_insecure_key = packet != NULL;
+        }
+    }
+    else
+    {
+        packet = netcode_read_packet( packet_data, 
+                                      packet_bytes, 
+                                      &sequence, 
+                                      read_packet_key, 
+                                      server->config.protocol_id, 
+                                      current_timestamp, 
+                                      server->min_connect_token_expire_timestamp, 
+                                      server->config.private_key, 
+                                      allowed_packets, 
+                                      ( client_index != -1 ) ? &server->client_replay_protection[client_index] : NULL, 
+                                      server->config.allocator_context, 
+                                      server->config.allocate_function );
+    }
 
     if ( !packet )
         return;
+
+    if ( is_connection_request )
+    {
+        ( (struct netcode_connection_request_packet_t*) packet )->decrypted_with_insecure_key = decrypted_with_insecure_key;
+    }
 
     netcode_server_process_packet_internal( server, from, packet, sequence, current_timestamp, encryption_index, client_index );
 }

@@ -4444,17 +4444,18 @@ void netcode_server_send_global_packet( struct netcode_server_t * server, void *
 
     netcode_assert( packet_bytes <= NETCODE_MAX_PACKET_BYTES );
 
-    if ( netcode_server_aux_send_packet( server, to, packet_data, packet_bytes ) )
-        return;
-
-    netcode_send_packet_to_address( server->config.network_simulator,
-                                    server->config.callback_context,
-                                    server->config.override_send_and_receive ? server->config.send_packet_override : NULL,
-                                    &server->socket_holder,
-                                    &server->address,
-                                    to,
-                                    packet_data,
-                                    packet_bytes );
+    // the sequence must advance however the packet was sent, or the client's replay protection drops the next ones
+    if ( !netcode_server_aux_send_packet( server, to, packet_data, packet_bytes ) )
+    {
+        netcode_send_packet_to_address( server->config.network_simulator,
+                                        server->config.callback_context,
+                                        server->config.override_send_and_receive ? server->config.send_packet_override : NULL,
+                                        &server->socket_holder,
+                                        &server->address,
+                                        to,
+                                        packet_data,
+                                        packet_bytes );
+    }
 
     server->global_sequence++;
 }
@@ -4485,17 +4486,18 @@ void netcode_server_send_client_packet( struct netcode_server_t * server, void *
 
     netcode_assert( packet_bytes <= NETCODE_MAX_PACKET_BYTES );
 
-    if ( netcode_server_aux_send_packet( server, &server->client_address[client_index], packet_data, packet_bytes ) )
-        return;
-
-    netcode_send_packet_to_address( server->config.network_simulator,
-                                    server->config.callback_context,
-                                    server->config.override_send_and_receive ? server->config.send_packet_override : NULL,
-                                    &server->socket_holder,
-                                    &server->address,
-                                    &server->client_address[client_index],
-                                    packet_data,
-                                    packet_bytes );
+    // the sequence must advance however the packet was sent, or the client's replay protection drops the next ones
+    if ( !netcode_server_aux_send_packet( server, &server->client_address[client_index], packet_data, packet_bytes ) )
+    {
+        netcode_send_packet_to_address( server->config.network_simulator,
+                                        server->config.callback_context,
+                                        server->config.override_send_and_receive ? server->config.send_packet_override : NULL,
+                                        &server->socket_holder,
+                                        &server->address,
+                                        &server->client_address[client_index],
+                                        packet_data,
+                                        packet_bytes );
+    }
 
     server->client_sequence[client_index]++;
 

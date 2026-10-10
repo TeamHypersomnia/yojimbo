@@ -345,8 +345,13 @@ namespace yojimbo
         }
 
 #if PLATFORM_WEB
-		/* Have to set it early to prevent socket creation */
+		/*
+			Have to set it early to prevent socket creation.
+			netcode requires both overrides along with it - the game sets the real ones right after the client is created.
+		*/
 		netcodeConfig.override_send_and_receive = 1;
+		netcodeConfig.send_packet_override = [](void*, struct netcode_address_t*, NETCODE_CONST uint8_t*, int) {};
+		netcodeConfig.receive_packet_override = [](void*, struct netcode_address_t*, uint8_t*, int) { return 0; };
 #endif
         m_client = netcode_client_create(addressString, &netcodeConfig, GetTime());
 

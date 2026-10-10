@@ -48,6 +48,9 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#ifndef __cplusplus
+#include <stdbool.h>
+#endif
 
 #if !defined(NETCODE_DEBUG) && !defined(NETCODE_RELEASE)
 #if defined(NDEBUG)
@@ -208,6 +211,9 @@ struct netcode_client_config_t
     int override_send_and_receive;
     void (*send_packet_override)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
     int (*receive_packet_override)(void*,struct netcode_address_t*,uint8_t*,int);
+
+	bool (*auxiliary_command_function)(void*,uint8_t*,int);
+	void * auxiliary_command_context;
 };
 
 void netcode_default_client_config( struct netcode_client_config_t * config );
@@ -286,6 +292,13 @@ struct netcode_server_config_t
     void (*send_packet_override)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
     int (*receive_packet_override)(void*,struct netcode_address_t*,uint8_t*,int);
     int max_connect_token_lifetime;
+
+    bool (*aux_send_packet)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
+    int (*aux_receive_packet)(void*,struct netcode_address_t*,uint8_t*,int);
+
+	bool (*auxiliary_command_function)(void*,struct netcode_address_t*,uint8_t*,int);
+	void * auxiliary_command_context;
+	int disable_disconnect_packets;
 };
 
 /*

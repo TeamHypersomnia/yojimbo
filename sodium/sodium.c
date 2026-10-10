@@ -1792,6 +1792,10 @@ randombytes_implementation_name(void)
 #endif
 }
 
+/* Hypersomnia: on the web, randomness comes from the game, which may call this from worker threads. */
+uint32_t
+randombytes_external(void);
+
 uint32_t
 randombytes_random(void)
 {
@@ -1799,9 +1803,7 @@ randombytes_random(void)
     randombytes_init_if_needed();
     return implementation->random();
 #else
-    return EM_ASM_INT_V({
-        return Module.getRandomValue();
-    });
+    return randombytes_external();
 #endif
 }
 

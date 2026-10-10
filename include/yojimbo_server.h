@@ -31,6 +31,7 @@
 
 struct netcode_server_t;
 struct netcode_address_t;
+class server_adapter;
 
 namespace yojimbo
 {
@@ -94,7 +95,7 @@ namespace yojimbo
     {
     public:
 
-        Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time );
+        Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, server_adapter* parent = NULL );
 
         ~Server();
 
@@ -138,6 +139,9 @@ namespace yojimbo
 
         const Address & GetAddress() const { return m_boundAddress; }
 
+		netcode_server_t* GetServerDetail() const { return m_server; }
+		server_adapter* GetParent() const { return m_parent; }
+
     private:
 
         void TransmitPacketFunction( int clientIndex, uint16_t packetSequence, uint8_t * packetData, int packetBytes ) YOJIMBO_OVERRIDE;
@@ -162,6 +166,8 @@ namespace yojimbo
         Address m_boundAddress;                             // address after socket bind, eg. valid port. custom packet I/O: stays the ctor-supplied synthetic address (no socket bind)
         uint8_t m_privateKey[KeyBytes];
         bool m_stopping;                                    // true while Stop tears the server down. makes a reentrant Stop from an adapter callback during teardown a harmless no-op
+
+		server_adapter* m_parent;
     };
 }
 

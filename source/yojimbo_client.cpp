@@ -25,11 +25,12 @@ namespace yojimbo
         }
     }
 
-    Client::Client( Allocator & allocator, const Address & address, const ClientServerConfig & config, Adapter & adapter, double time )
+    Client::Client( Allocator & allocator, const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, client_adapter* parent )
         : BaseClient( allocator, config, adapter, time ), m_config( config ), m_address( address )
     {
         m_clientId = 0;
         m_client = NULL;
+        m_parent = parent;
         m_boundAddress = m_address;
         m_disconnecting = false;
     }
@@ -97,16 +98,13 @@ namespace yojimbo
         uint8_t userData[256];
         memset( &userData, 0, sizeof(userData) );
 
-        // Give the insecure connect token an expiry well above the connection timeout, so a
-        // failed insecure connect reports "connection request timed out" just like a secure
-        // connect token from a matchmaker would. With expiry == timeout, netcode checks token
-        // expiry first and every failed connect reports "connect token expired" instead.
-        const int expireSeconds = yojimbo_max( InsecureConnectTokenExpirySeconds, m_config.timeout * 2 );
-
+        // Hypersomnia: insecure connect tokens are minted on the client with the client's clock,
+        // so any finite expiry breaks connecting whenever the client's clock lags the server's.
+        // They carry no security anyway (the private key is all zeros), so never expire them.
         return netcode_generate_connect_token( numServerAddresses,
                                                serverAddressStringPointers,
                                                serverAddressStringPointers,
-                                               expireSeconds,
+                                               -1,
                                                m_config.timeout,
                                                clientId,
                                                m_config.protocolId,
@@ -345,6 +343,11 @@ namespace yojimbo
             netcodeConfig.send_packet_override = StaticSendPacketOverride;
             netcodeConfig.receive_packet_override = StaticReceivePacketOverride;
         }
+
+#if PLATFORM_WEB
+		/* Have to set it early to prevent socket creation */
+		netcodeConfig.override_send_and_receive = 1;
+#endif
         m_client = netcode_client_create(addressString, &netcodeConfig, GetTime());
 
         if ( m_client )

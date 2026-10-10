@@ -31,6 +31,7 @@
 
 struct netcode_client_t;
 struct netcode_address_t;
+class client_adapter;
 
 namespace yojimbo
 {
@@ -112,7 +113,7 @@ namespace yojimbo
             @param time The current time in seconds. See ClientInterface::AdvanceTime
          */
 
-        explicit Client( Allocator & allocator, const Address & address, const ClientServerConfig & config, Adapter & adapter, double time );
+        explicit Client( Allocator & allocator, const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, client_adapter* parent = NULL );
 
         ~Client();
 
@@ -162,6 +163,9 @@ namespace yojimbo
 
         const Address & GetAddress() const { return m_boundAddress; }
 
+		netcode_client_t* GetClientDetail() const { return m_client; }
+		client_adapter* GetParent() const { return m_parent; }
+
     private:
 
         bool GenerateInsecureConnectToken( uint8_t * connectToken,
@@ -196,6 +200,8 @@ namespace yojimbo
         Address m_boundAddress;                         ///< Address after socket bind, eg. with valid port. Custom packet I/O: stays the ctor-supplied synthetic address (no socket bind).
         uint64_t m_clientId;                            ///< The globally unique client id (set on each call to connect)
         bool m_disconnecting;                           ///< True while Disconnect tears the client down. Makes a reentrant Disconnect from an adapter callback during teardown a harmless no-op.
+
+		client_adapter* m_parent;
     };
 }
 

@@ -32,7 +32,7 @@
 
 namespace yojimbo
 {
-    Server::Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time )
+    Server::Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, server_adapter* parent ) 
         : BaseServer( allocator, config, adapter, time )
     {
         yojimbo_assert( KeyBytes == NETCODE_KEY_BYTES );
@@ -43,6 +43,7 @@ namespace yojimbo
         m_config = config;
         m_server = NULL;
         m_stopping = false;
+		m_parent = parent;
     }
 
     Server::~Server()
@@ -80,6 +81,11 @@ namespace yojimbo
             netcodeConfig.receive_packet_override = StaticReceivePacketOverride;
         }
 
+#if PLATFORM_WEB
+		/* Have to set it early to prevent socket creation */
+        netcodeConfig.override_send_and_receive = 1;
+#endif
+        
         m_server = netcode_server_create(addressString, &netcodeConfig, GetTime());
 
         if ( !m_server )

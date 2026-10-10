@@ -635,6 +635,24 @@ static int netcode_sockaddr_to_address( NETCODE_CONST struct sockaddr_storage * 
     return NETCODE_ERROR;
 }
 
+int netcode_socket_set_ttl( struct netcode_socket_t * s, int ttl )
+{
+	return setsockopt(s->handle, IPPROTO_IP, IP_TTL, (const char*)(&ttl), sizeof(ttl));
+}
+
+int netcode_socket_get_ttl(struct netcode_socket_t * s)
+{
+	int ttl;
+	socklen_t len = sizeof(ttl);
+	int result = getsockopt(s->handle, IPPROTO_IP, IP_TTL, (char*)(&ttl), &len);
+
+	(void)result;
+
+	netcode_assert(0 == result);
+
+	return ttl;
+}
+
 int netcode_socket_create( struct netcode_socket_t * s, struct netcode_address_t * address, int send_buffer_size, int receive_buffer_size )
 {
     netcode_assert( s );
@@ -2823,6 +2841,8 @@ void netcode_default_client_config( struct netcode_client_config_t * config )
     config->override_send_and_receive = 0;
     config->send_packet_override = NULL;
     config->receive_packet_override = NULL;
+    config->auxiliary_command_function = NULL;
+    config->auxiliary_command_context = NULL;
 }
 
 struct netcode_client_t
@@ -3292,6 +3312,14 @@ void netcode_client_receive_packets( struct netcode_client_t * client )
 
             if ( packet_bytes == 0 )
                 break;
+
+            if ( client->config.auxiliary_command_function != NULL )
+            {
+                if ( client->config.auxiliary_command_function( client->config.auxiliary_command_context, packet_data, packet_bytes ) )
+                {
+                    continue;
+                }
+            }
 
             netcode_client_process_packet( client, &from, packet_data, packet_bytes );
         }
@@ -4092,6 +4120,11 @@ void netcode_default_server_config( struct netcode_server_config_t * config )
     config->override_send_and_receive = 0;
     config->send_packet_override = NULL;
     config->receive_packet_override = NULL;
+    config->aux_send_packet = NULL;
+    config->aux_receive_packet = NULL;
+    config->auxiliary_command_function = NULL;
+    config->auxiliary_command_context = NULL;
+    config->disable_disconnect_packets = 0;
 }
 
 struct netcode_server_t
@@ -4384,6 +4417,18 @@ void netcode_server_start( struct netcode_server_t * server, int max_clients )
     }
 }
 
+// Hypersomnia: lets the game route a packet through its own transport (e.g. WebRTC) instead of the real socket.
+static int netcode_server_aux_send_packet( struct netcode_server_t * server, struct netcode_address_t * to, uint8_t * packet_data, int packet_bytes )
+{
+    if ( server->config.network_simulator || server->config.override_send_and_receive || server->config.aux_send_packet == NULL )
+        return 0;
+
+    if ( to->type != NETCODE_ADDRESS_IPV4 )
+        return 0;
+
+    return server->config.aux_send_packet( server->config.callback_context, to, packet_data, packet_bytes ) ? 1 : 0;
+}
+
 void netcode_server_send_global_packet( struct netcode_server_t * server, void * packet, struct netcode_address_t * to, uint8_t * packet_key )
 {
     netcode_assert( server );
@@ -4396,6 +4441,9 @@ void netcode_server_send_global_packet( struct netcode_server_t * server, void *
     int packet_bytes = netcode_write_packet( packet, packet_data, NETCODE_MAX_PACKET_BYTES, server->global_sequence, packet_key, server->config.protocol_id );
 
     netcode_assert( packet_bytes <= NETCODE_MAX_PACKET_BYTES );
+
+    if ( netcode_server_aux_send_packet( server, to, packet_data, packet_bytes ) )
+        return;
 
     netcode_send_packet_to_address( server->config.network_simulator,
                                     server->config.callback_context,
@@ -4434,6 +4482,9 @@ void netcode_server_send_client_packet( struct netcode_server_t * server, void *
     int packet_bytes = netcode_write_packet( packet, packet_data, NETCODE_MAX_PACKET_BYTES, server->client_sequence[client_index], packet_key, server->config.protocol_id );
 
     netcode_assert( packet_bytes <= NETCODE_MAX_PACKET_BYTES );
+
+    if ( netcode_server_aux_send_packet( server, &server->client_address[client_index], packet_data, packet_bytes ) )
+        return;
 
     netcode_send_packet_to_address( server->config.network_simulator,
                                     server->config.callback_context,
@@ -4490,7 +4541,8 @@ void netcode_server_disconnect_client_internal( struct netcode_server_t * server
         server->config.connect_disconnect_callback( server->config.callback_context, client_index, 0 );
     }
 
-    if ( send_disconnect_packets )
+    // Hypersomnia: the game can opt out of netcode disconnect packets.
+    if ( send_disconnect_packets && !server->config.disable_disconnect_packets )
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server sent disconnect packets to client %d\n", client_index );
 
@@ -4631,25 +4683,6 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
     if ( netcode_read_connect_token_private( packet->connect_token_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES, &connect_token_private ) != NETCODE_OK )
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection request. failed to read connect token\n" );
-        return;
-    }
-
-    int found_server_address = 0;
-    int i;
-    for ( i = 0; i < connect_token_private.num_server_addresses; i++ )
-    {
-        if ( netcode_address_equal( &server->address, &connect_token_private.server_addresses[i] ) )
-        {
-            found_server_address = 1;
-        }
-        if ( server->address2.type != NETCODE_ADDRESS_NONE && netcode_address_equal( &server->address2, &connect_token_private.server_addresses[i] ) )
-        {
-            found_server_address = 1;
-        }
-    }
-    if ( !found_server_address )
-    {   
-        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection request. server address not in connect token whitelist\n" );
         return;
     }
 
@@ -5005,6 +5038,17 @@ void netcode_server_read_and_process_packet( struct netcode_server_t * server,
     if ( packet_bytes <= 1 )
         return;
 
+    if ( server->config.auxiliary_command_function != NULL ) {
+		if (server->config.auxiliary_command_function(
+			server->config.auxiliary_command_context, 
+			from, 
+			packet_data, 
+			packet_bytes
+		)) {
+			return;
+		}
+	}
+
     uint64_t sequence;
 
     int encryption_index = -1;
@@ -5086,6 +5130,9 @@ void netcode_server_receive_packets( struct netcode_server_t * server )
 
                 if ( packet_bytes == 0 && server->socket_holder.ipv6.handle != 0)
                     packet_bytes = netcode_socket_receive_packet( &server->socket_holder.ipv6, &from, packet_data, NETCODE_MAX_PACKET_BYTES );
+
+                if ( packet_bytes == 0 && server->config.aux_receive_packet != NULL )
+                    packet_bytes = server->config.aux_receive_packet( server->config.callback_context, &from, packet_data, NETCODE_MAX_PACKET_BYTES );
             }
 
             if ( packet_bytes == 0 )
@@ -5702,6 +5749,8 @@ double netcode_time()
     return current - start;
 }
 
+#elif defined(__EMSCRIPTEN__)
+
 #elif NETCODE_PLATFORM == NETCODE_PLATFORM_WINDOWS
 
 // windows
@@ -5733,6 +5782,8 @@ double netcode_time()
     QueryPerformanceCounter( &now );
     return ( (double) ( now.QuadPart - timer_start.QuadPart ) ) / ( (double) ( timer_frequency.QuadPart ) );
 }
+
+#elif defined(__EMSCRIPTEN__)
 
 #else
 

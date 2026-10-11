@@ -4700,6 +4700,20 @@ int netcode_server_find_client_index_by_address( struct netcode_server_t * serve
     return -1;
 }
 
+// a refusal because a table is full must be visible in the logs (it is no part of normal operation),
+// but at most every 10 seconds, so that a flood does not flood the logs too
+
+static void netcode_server_log_table_full( struct netcode_server_t * server, const char * what )
+{
+    static double last_logged = -1000.0;
+
+    if ( server->time - last_logged >= 10.0 || server->time < last_logged )
+    {
+        last_logged = server->time;
+        netcode_printf( NETCODE_LOG_LEVEL_ERROR, "server refused a connection request: %s is full (a flood of connection requests, or a leak)\n", what );
+    }
+}
+
 void netcode_server_process_connection_request_packet( struct netcode_server_t * server, 
                                                        struct netcode_address_t * from, 
                                                        struct netcode_connection_request_packet_t * packet, 
@@ -4747,7 +4761,7 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
 
     if ( connect_token_entry_index == NETCODE_CONNECT_TOKEN_HISTORY_FULL )
     {
-        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection request. connect token history is full\n" );
+        netcode_server_log_table_full( server, "the connect token history" );
         return;
     }
 
@@ -4785,7 +4799,7 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
                                                              connect_token_private.timeout_seconds,
                                                              connect_token_entry_index ) )
     {
-        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection request. failed to add encryption mapping\n" );
+        netcode_server_log_table_full( server, "the encryption mapping table" );
         return;
     }
 

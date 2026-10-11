@@ -2675,6 +2675,11 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
             return;
         }
 
+        // a "full" answer is no reason to give up the taken key
+
+        if ( flags & NETCODE_CHALLENGE_FLAG_SERVER_FULL )
+            return;
+
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client took another server public key - the previous one led nowhere\n" );
         client->has_server_public_key = 0;
     }
@@ -3581,6 +3586,8 @@ struct netcode_server_t
     double rate_tokens[NETCODE_HANDSHAKE_RATE_BUCKETS];
     double global_rate_last_time;
     double global_rate_tokens;
+    double newcomer_rate_last_time;
+    double newcomer_rate_tokens;
     uint8_t used_cookies[NETCODE_USED_COOKIES][NETCODE_MAC_BYTES];
     int used_cookie_next;
     double rate_limit_last_logged;
@@ -3869,6 +3876,8 @@ void netcode_server_start( struct netcode_server_t * server, int max_clients )
 
         server->global_rate_last_time = server->time;
         server->global_rate_tokens = 2.0 * server->config.handshakes_per_second_global;
+        server->newcomer_rate_last_time = server->time;
+        server->newcomer_rate_tokens = 2.0 * server->config.handshakes_per_second_global;
     }
 
     server->global_sequence = 1ULL << 63;
@@ -4401,15 +4410,20 @@ static int netcode_server_take_handshake( struct netcode_server_t * server, NETC
     }
 
     /*
-        The global budget stops floods from many addresses - but an address that has not handshaken for a while
-        (its own bucket nearly full) passes anyway: a flood must not lock out players who just arrive.
+        The global budget stops floods from many addresses. An idle address (its own bucket full - nothing from it lately)
+        draws from a second budget of the same size instead: a flood from busy addresses must not lock out players
+        who just arrive, and all the work stays bounded at twice the global rate.
     */
 
-    if ( server->config.handshakes_per_second_global > 0.0 && own_tokens < burst - 1.0 )
+    if ( server->config.handshakes_per_second_global > 0.0 )
     {
         const double global = server->config.handshakes_per_second_global;
+        const int idle = own_tokens >= burst;
 
-        if ( !netcode_take_token( &server->global_rate_last_time, &server->global_rate_tokens, server->time, global, 2.0 * global, NULL ) )
+        double * last_time = idle ? &server->newcomer_rate_last_time : &server->global_rate_last_time;
+        double * tokens = idle ? &server->newcomer_rate_tokens : &server->global_rate_tokens;
+
+        if ( !netcode_take_token( last_time, tokens, server->time, global, 2.0 * global, NULL ) )
             return 0;
     }
 
@@ -9860,12 +9874,20 @@ void test_handshake_rate_limit_prefix48_and_global()
     check( netcode_parse_address( "10.1.0.1:1000", &c ) == NETCODE_OK );
     check( netcode_parse_address( "10.1.0.2:1000", &d ) == NETCODE_OK );
 
-    check( netcode_server_take_handshake( server, &c ) );   // fresh: past the global budget
-    check( netcode_server_take_handshake( server, &c ) );   // still nearly full
+    check( netcode_server_take_handshake( server, &c ) );   // idle: from the newcomers' budget
     check( netcode_server_take_handshake( server, &c ) );   // global 2 -> 1
     check( netcode_server_take_handshake( server, &c ) );   // global 1 -> 0
     check( !netcode_server_take_handshake( server, &c ) );  // global budget used up
     check( netcode_server_take_handshake( server, &d ) );   // a newcomer still gets in
+
+    // and the newcomers' budget is bounded too
+
+    server->newcomer_rate_tokens = 0.0;
+    server->newcomer_rate_last_time = server->time;
+
+    struct netcode_address_t f;
+    check( netcode_parse_address( "10.1.0.3:1000", &f ) == NETCODE_OK );
+    check( !netcode_server_take_handshake( server, &f ) );
 
     test_wire_destroy();
 }

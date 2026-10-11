@@ -2664,8 +2664,19 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
 
     if ( client->has_server_public_key && sodium_memcmp( server_public_key, client->server_public_key, NETCODE_PUBLIC_KEY_BYTES ) != 0 )
     {
-        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client ignored challenge packet. the server public key changed during the handshake\n" );
-        return;
+        /*
+            Joined by address (no key pinned), the first challenge's key is taken - a forged one with another key
+            could be first. When the taken key has led nowhere for a second, a challenge with another key starts over with it.
+        */
+
+        if ( client->has_expected_server_public_key || client->time - client->last_packet_receive_time < 1.0 )
+        {
+            netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client ignored challenge packet. the server public key changed during the handshake\n" );
+            return;
+        }
+
+        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client took another server public key - the previous one led nowhere\n" );
+        client->has_server_public_key = 0;
     }
 
     if ( flags & NETCODE_CHALLENGE_FLAG_SERVER_FULL )
@@ -2675,6 +2686,10 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
 
         return;
     }
+
+    // a challenge that does not say full ends a "full" spell, whatever its cookie
+
+    client->server_full_since = -1.0;
 
     if ( !client->has_server_public_key )
     {
@@ -4293,7 +4308,7 @@ static int netcode_is_unlimited_address( NETCODE_CONST struct netcode_address_t 
     that collides with another only shares its limit.
 */
 
-static int netcode_take_token( double * last_time, double * tokens_left, double now, double rate, double burst )
+static int netcode_take_token( double * last_time, double * tokens_left, double now, double rate, double burst, double * tokens_before )
 {
     double elapsed = now - *last_time;
 
@@ -4304,6 +4319,9 @@ static int netcode_take_token( double * last_time, double * tokens_left, double 
 
     if ( tokens > burst )
         tokens = burst;
+
+    if ( tokens_before )
+        *tokens_before = tokens;
 
     *last_time = now;
 
@@ -4367,8 +4385,9 @@ static int netcode_server_take_handshake( struct netcode_server_t * server, NETC
     }
 
     const uint64_t index = netcode_server_rate_bucket( server, 64, data, bytes );
+    double own_tokens = 0.0;
 
-    if ( !netcode_take_token( &server->rate_last_time[index], &server->rate_tokens[index], server->time, rate, burst ) )
+    if ( !netcode_take_token( &server->rate_last_time[index], &server->rate_tokens[index], server->time, rate, burst, &own_tokens ) )
         return 0;
 
     if ( address->type == NETCODE_ADDRESS_IPV6 )
@@ -4377,15 +4396,20 @@ static int netcode_server_take_handshake( struct netcode_server_t * server, NETC
         const uint64_t index48 = netcode_server_rate_bucket( server, 48, data, 6 );
         const double m = NETCODE_HANDSHAKE_PREFIX48_MULTIPLIER;
 
-        if ( !netcode_take_token( &server->rate_last_time[index48], &server->rate_tokens[index48], server->time, rate * m, burst * m ) )
+        if ( !netcode_take_token( &server->rate_last_time[index48], &server->rate_tokens[index48], server->time, rate * m, burst * m, NULL ) )
             return 0;
     }
 
-    if ( server->config.handshakes_per_second_global > 0.0 )
+    /*
+        The global budget stops floods from many addresses - but an address that has not handshaken for a while
+        (its own bucket nearly full) passes anyway: a flood must not lock out players who just arrive.
+    */
+
+    if ( server->config.handshakes_per_second_global > 0.0 && own_tokens < burst - 1.0 )
     {
         const double global = server->config.handshakes_per_second_global;
 
-        if ( !netcode_take_token( &server->global_rate_last_time, &server->global_rate_tokens, server->time, global, 2.0 * global ) )
+        if ( !netcode_take_token( &server->global_rate_last_time, &server->global_rate_tokens, server->time, global, 2.0 * global, NULL ) )
             return 0;
     }
 
@@ -9634,6 +9658,57 @@ void test_handshake_forged_challenge()
     test_wire_destroy();
 }
 
+void test_handshake_forged_challenge_other_key()
+{
+    // joined by address (no key pinned): a forged challenge with another key, arriving first, must not keep the client out
+
+    test_wire_create( 0 );
+
+    // the real server does not answer the request yet, so the forged challenge is the first
+
+    test_wire.server->flags = NETCODE_SERVER_FLAG_IGNORE_CONNECTION_REQUEST_PACKETS;
+
+    struct netcode_address_t server_address;
+    check( netcode_parse_address( "[::1]:40000", &server_address ) == NETCODE_OK );
+    netcode_client_connect( test_wire.client, 1, &server_address, NULL, test_session_secret_key, NULL );
+
+    double time = 0.0;
+
+    netcode_client_update( test_wire.client, time );
+    netcode_server_update( test_wire.server, time );
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST );
+
+    test_wire.server->flags = 0;
+
+    uint8_t forged[1 + NETCODE_COOKIE_BYTES + NETCODE_PUBLIC_KEY_BYTES + 1];
+    forged[0] = NETCODE_HANDSHAKE_CHALLENGE_PACKET;
+    netcode_random_bytes( forged + 1, NETCODE_COOKIE_BYTES );
+
+    uint8_t other_public[crypto_sign_PUBLICKEYBYTES];
+    uint8_t other_secret[crypto_sign_SECRETKEYBYTES];
+    crypto_sign_keypair( other_public, other_secret );
+    memcpy( forged + 1 + NETCODE_COOKIE_BYTES, other_public, NETCODE_PUBLIC_KEY_BYTES );
+    forged[sizeof( forged ) - 1] = 0;
+
+    netcode_client_process_packet( test_wire.client, &test_wire.server_address, forged, (int) sizeof( forged ) );
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_SENDING_CONNECTION_RESPONSE );
+
+    int iterations = 0;
+
+    while ( netcode_client_state( test_wire.client ) != NETCODE_CLIENT_STATE_CONNECTED && iterations < 100 )
+    {
+        time += 0.1;
+        netcode_client_update( test_wire.client, time );
+        netcode_server_update( test_wire.server, time );
+        iterations++;
+    }
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_CONNECTED );
+
+    test_wire_destroy();
+}
+
 void test_handshake_stale_cookie()
 {
     test_wire_create( 0 );
@@ -9768,19 +9843,29 @@ void test_handshake_rate_limit_prefix48_and_global()
     check( !netcode_server_take_handshake( server, &ninth ) );
     check( netcode_server_take_handshake( server, &other_48 ) );
 
-    // all addresses together: the global budget
+    // all addresses together: the global budget - which an address that has not handshaken lately passes anyway
 
+    server->config.handshake_burst_per_address = 10.0;
     server->config.handshakes_per_second_global = 1.0;
     server->global_rate_tokens = 2.0;
     server->global_rate_last_time = server->time;
 
-    struct netcode_address_t c, d, e;
+    for ( bucket = 0; bucket < NETCODE_HANDSHAKE_RATE_BUCKETS; bucket++ )
+    {
+        server->rate_tokens[bucket] = 10.0;
+        server->rate_last_time[bucket] = server->time;
+    }
+
+    struct netcode_address_t c, d;
     check( netcode_parse_address( "10.1.0.1:1000", &c ) == NETCODE_OK );
     check( netcode_parse_address( "10.1.0.2:1000", &d ) == NETCODE_OK );
-    check( netcode_parse_address( "10.1.0.3:1000", &e ) == NETCODE_OK );
-    check( netcode_server_take_handshake( server, &c ) );
-    check( netcode_server_take_handshake( server, &d ) );
-    check( !netcode_server_take_handshake( server, &e ) );
+
+    check( netcode_server_take_handshake( server, &c ) );   // fresh: past the global budget
+    check( netcode_server_take_handshake( server, &c ) );   // still nearly full
+    check( netcode_server_take_handshake( server, &c ) );   // global 2 -> 1
+    check( netcode_server_take_handshake( server, &c ) );   // global 1 -> 0
+    check( !netcode_server_take_handshake( server, &c ) );  // global budget used up
+    check( netcode_server_take_handshake( server, &d ) );   // a newcomer still gets in
 
     test_wire_destroy();
 }
@@ -9986,6 +10071,7 @@ void netcode_test()
         RUN_TEST( test_handshake_response_replay );
         RUN_TEST( test_handshake_stale_cookie );
         RUN_TEST( test_handshake_forged_challenge );
+        RUN_TEST( test_handshake_forged_challenge_other_key );
         RUN_TEST( test_handshake_version_mismatch );
         RUN_TEST( test_handshake_rate_limit );
         RUN_TEST( test_handshake_rate_limit_prefix48_and_global );

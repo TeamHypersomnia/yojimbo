@@ -3757,6 +3757,8 @@ struct netcode_encryption_manager_t
     struct netcode_address_t address[NETCODE_MAX_ENCRYPTION_MAPPINGS];
     int client_index[NETCODE_MAX_ENCRYPTION_MAPPINGS];
     int connect_token_entry_index[NETCODE_MAX_ENCRYPTION_MAPPINGS];
+    uint64_t handshake_client_id[NETCODE_MAX_ENCRYPTION_MAPPINGS];
+    int insecure_handshake[NETCODE_MAX_ENCRYPTION_MAPPINGS];
     uint8_t send_key[NETCODE_KEY_BYTES*NETCODE_MAX_ENCRYPTION_MAPPINGS];
     uint8_t receive_key[NETCODE_KEY_BYTES*NETCODE_MAX_ENCRYPTION_MAPPINGS];
 };
@@ -3774,6 +3776,8 @@ void netcode_encryption_manager_reset( struct netcode_encryption_manager_t * enc
     {
         encryption_manager->client_index[i] = -1;
         encryption_manager->connect_token_entry_index[i] = -1;
+        encryption_manager->handshake_client_id[i] = 0;
+        encryption_manager->insecure_handshake[i] = 0;
         encryption_manager->expire_time[i] = -1.0;
         encryption_manager->last_access_time[i] = -1000.0;
         memset( &encryption_manager->address[i], 0, sizeof( struct netcode_address_t ) );
@@ -4024,6 +4028,7 @@ int netcode_connect_token_entries_find_or_add( struct netcode_connect_token_entr
     for ( i = 0; i < NETCODE_MAX_CONNECT_TOKEN_ENTRIES; i++ )
     {
         if ( connect_token_entries[i].state != NETCODE_CONNECT_TOKEN_ENTRY_FREE && 
+             connect_token_entries[i].insecure == insecure &&
              memcmp( mac, connect_token_entries[i].mac, NETCODE_MAC_BYTES ) == 0 )
         {
             matching_token_index = i;
@@ -4046,6 +4051,23 @@ int netcode_connect_token_entries_find_or_add( struct netcode_connect_token_entr
             for ( i = 0; i < NETCODE_MAX_CONNECT_TOKEN_ENTRIES; i++ )
             {
                 if ( connect_token_entries[i].insecure && 
+                     ( free_token_index == -1 || connect_token_entries[i].time < connect_token_entries[free_token_index].time ) )
+                {
+                    free_token_index = i;
+                }
+            }
+        }
+
+        // then the oldest secure entry whose handshake never completed: tokens are free to ask for, so
+        // pending entries alone could fill the history for as long as their tokens live. a consumed entry,
+        // the one that guards a used token's session keys, is never evicted.
+
+        if ( free_token_index == -1 )
+        {
+            for ( i = 0; i < NETCODE_MAX_CONNECT_TOKEN_ENTRIES; i++ )
+            {
+                if ( connect_token_entries[i].state == NETCODE_CONNECT_TOKEN_ENTRY_PENDING && 
+                     connect_token_entries[i].time + NETCODE_PENDING_HANDSHAKE_SECONDS < time &&
                      ( free_token_index == -1 || connect_token_entries[i].time < connect_token_entries[free_token_index].time ) )
                 {
                     free_token_index = i;
@@ -4804,7 +4826,9 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
     // a port that changed - would keep its mapping for good, and once they took all NETCODE_MAX_ENCRYPTION_MAPPINGS
     // the server would refuse every connection. connecting the client clears this expiry, disconnecting removes the mapping.
 
-    double expire_time = server->time + ( ( connect_token_private.timeout_seconds > 0 ) ? connect_token_private.timeout_seconds : NETCODE_PENDING_HANDSHAKE_SECONDS );
+    // never from the connect token: an insecure one can say anything, e.g. a timeout of 68 years.
+
+    double expire_time = server->time + NETCODE_PENDING_HANDSHAKE_SECONDS;
 
     if ( !netcode_encryption_manager_add_encryption_mapping( &server->encryption_manager, 
                                                              from, 
@@ -4817,6 +4841,20 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
     {
         netcode_server_log_table_full( server, "the encryption mapping table" );
         return;
+    }
+
+    // what the challenge token sent back must belong to: this handshake's client, secure or not.
+    // otherwise a challenge token from one secure handshake could be sent back over any number of insecure ones,
+    // passing its user data (the official server id) on to connections that never had a secure token.
+
+    {
+        const int mapping_index = netcode_encryption_manager_find_encryption_mapping( &server->encryption_manager, from, server->time );
+
+        if ( mapping_index >= 0 )
+        {
+            server->encryption_manager.handshake_client_id[mapping_index] = connect_token_private.client_id;
+            server->encryption_manager.insecure_handshake[mapping_index] = insecure_connect_token;
+        }
     }
 
     struct netcode_challenge_token_t challenge_token;
@@ -4954,6 +4992,17 @@ void netcode_server_process_connection_response_packet( struct netcode_server_t 
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection response. no packet send key\n" );
         return;
+    }
+
+    if ( challenge_token.client_id != server->encryption_manager.handshake_client_id[encryption_index] )
+    {
+        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection response. the challenge token is from another handshake\n" );
+        return;
+    }
+
+    if ( server->encryption_manager.insecure_handshake[encryption_index] )
+    {
+        memset( challenge_token.user_data, 0, NETCODE_USER_DATA_BYTES );
     }
 
     if ( netcode_server_find_client_index_by_address( server, from ) != -1 )
@@ -9684,7 +9733,11 @@ void test_connect_token_entries()
     mac[0] = 0xFF;
     mac[1] = 0xFF;
 
-    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 500.0, 0 ) == NETCODE_CONNECT_TOKEN_HISTORY_FULL );
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 400.0 + NETCODE_PENDING_HANDSHAKE_SECONDS - 1.0, 0 ) == NETCODE_CONNECT_TOKEN_HISTORY_FULL );
+
+    // a pending entry whose handshake never completed in NETCODE_PENDING_HANDSHAKE_SECONDS is evicted for a new one
+
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 400.0 + NETCODE_PENDING_HANDSHAKE_SECONDS + 1.0, 0 ) >= 0 );
 
     // the consumed entry is still refusing its connect token, and was not evicted by the flood
 
@@ -9749,6 +9802,74 @@ void test_unfinished_handshakes_do_not_exhaust_encryption_mappings()
     {                                                                                                                                       \
         struct netcode_connect_token_private_t connect_token_private;                                                                       \
         netcode_generate_connect_token_private( &connect_token_private, 1000 + request_index, -1, 1, &server_address, user_data );         \
+        memset( &packet, 0, sizeof( packet ) );                                                                                             \
+        netcode_write_connect_token_private( &connect_token_private, packet.connect_token_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES );     \
+        packet.connect_token_expire_timestamp = current_timestamp + 60;                                                                    \
+        memset( packet_mac, 0, NETCODE_MAC_BYTES );                                                                                         \
+        memcpy( packet_mac, &request_index, sizeof( request_index ) );                                                                     \
+        ++request_index;                                                                                                                    \
+        struct netcode_address_t from;                                                                                                      \
+        check( netcode_parse_address( from_string, &from ) == NETCODE_OK );                                                                \
+        netcode_server_process_connection_request_packet( server, &from, &packet, current_timestamp );                                     \
+    }
+
+    int i;
+    for ( i = 0; i < NETCODE_MAX_ENCRYPTION_MAPPINGS + 16; i++ )
+    {
+        char from_string[64];
+        snprintf( from_string, sizeof( from_string ), "[::1]:%d", 20000 + i );
+        TEST_SEND_UNFINISHED_REQUEST( from_string );
+    }
+
+    // the clients never answered the challenge. some time later, a new one must still get a mapping
+
+    server_time += NETCODE_PENDING_HANDSHAKE_SECONDS + 1.0;
+    server->time = server_time;
+
+    TEST_SEND_UNFINISHED_REQUEST( "[::1]:30000" );
+
+    struct netcode_address_t new_client;
+    check( netcode_parse_address( "[::1]:30000", &new_client ) == NETCODE_OK );
+    check( netcode_encryption_manager_find_encryption_mapping( &server->encryption_manager, &new_client, server->time ) != -1 );
+
+    #undef TEST_SEND_UNFINISHED_REQUEST
+
+    netcode_server_destroy( server );
+}
+
+void test_unfinished_handshakes_with_huge_timeouts_do_not_exhaust_encryption_mappings()
+{
+    // an insecure connect token can carry any timeout - handshakes left unfinished with one of 68 years
+    // must not keep their encryption mappings for good either.
+
+    struct netcode_server_config_t server_config;
+    netcode_default_server_config( &server_config );
+    server_config.protocol_id = TEST_PROTOCOL_ID;
+    memcpy( &server_config.private_key, private_key, NETCODE_KEY_BYTES );
+
+    double server_time = 0.0;
+
+    struct netcode_server_t * server = netcode_server_create( "[::1]:40000", &server_config, server_time );
+    check( server );
+    netcode_server_start( server, NETCODE_MAX_CLIENTS );
+
+    struct netcode_address_t server_address;
+    check( netcode_parse_address( "[::1]:40000", &server_address ) == NETCODE_OK );
+
+    uint8_t user_data[NETCODE_USER_DATA_BYTES];
+    memset( user_data, 0, NETCODE_USER_DATA_BYTES );
+
+    const uint64_t current_timestamp = (uint64_t) time( NULL );
+
+    struct netcode_connection_request_packet_t packet;
+    uint8_t * packet_mac = packet.connect_token_data + NETCODE_CONNECT_TOKEN_PRIVATE_BYTES - NETCODE_MAC_BYTES;
+
+    int request_index = 0;
+
+    #define TEST_SEND_UNFINISHED_REQUEST( from_string )                                                                                     \
+    {                                                                                                                                       \
+        struct netcode_connect_token_private_t connect_token_private;                                                                       \
+        netcode_generate_connect_token_private( &connect_token_private, 1000 + request_index, 0x7FFFFFFF, 1, &server_address, user_data );         \
         memset( &packet, 0, sizeof( packet ) );                                                                                             \
         netcode_write_connect_token_private( &connect_token_private, packet.connect_token_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES );     \
         packet.connect_token_expire_timestamp = current_timestamp + 60;                                                                    \
@@ -10920,6 +11041,7 @@ void netcode_test()
         RUN_TEST( test_connect_token_entries );
         RUN_TEST( test_connect_token_history_evicts_insecure_entries );
         RUN_TEST( test_unfinished_handshakes_do_not_exhaust_encryption_mappings );
+        RUN_TEST( test_unfinished_handshakes_with_huge_timeouts_do_not_exhaust_encryption_mappings );
         RUN_TEST( test_client_server_connection_request_retransmission );
         RUN_TEST( test_client_server_replay_across_sessions );
         RUN_TEST( test_client_reconnect_with_used_connect_token );

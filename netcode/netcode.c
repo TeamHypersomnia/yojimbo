@@ -3962,6 +3962,7 @@ struct netcode_connect_token_entry_t
     uint64_t expire_timestamp;      // when the connect token expires, and with it this entry
     uint8_t mac[NETCODE_MAC_BYTES];
     struct netcode_address_t address;
+    int insecure;                   // the connect token was made with the all-zero key, i.e. by anyone
 };
 
 void netcode_connect_token_entries_reset( struct netcode_connect_token_entry_t * connect_token_entries )
@@ -3972,6 +3973,7 @@ void netcode_connect_token_entries_reset( struct netcode_connect_token_entry_t *
         connect_token_entries[i].state = NETCODE_CONNECT_TOKEN_ENTRY_FREE;
         connect_token_entries[i].time = -1000.0;
         connect_token_entries[i].expire_timestamp = 0;
+        connect_token_entries[i].insecure = 0;
         memset( connect_token_entries[i].mac, 0, NETCODE_MAC_BYTES );
         memset( &connect_token_entries[i].address, 0, sizeof( struct netcode_address_t ) );
     }
@@ -3990,6 +3992,12 @@ void netcode_connect_token_entries_reset( struct netcode_connect_token_entry_t *
     An entry lives until its connect token expires. A history whose entries all hold unexpired
     connect tokens refuses a new connect token instead of evicting one, because evicting is
     how a flood of connect tokens would reopen a token that has already been used.
+
+    Except for the insecure entries: anyone can make any number of connect tokens with the
+    all-zero key, with any keys inside and an expire timestamp that never comes (insecure
+    clients use the largest one), so reopening one protects nothing. A full history evicts
+    the oldest insecure entry - otherwise a flood of insecure tokens, or just enough insecure
+    connections since the server started, would leave it refusing every connect token for good.
 */
 
 int netcode_connect_token_entries_find_or_add( struct netcode_connect_token_entry_t * connect_token_entries, 
@@ -3997,7 +4005,8 @@ int netcode_connect_token_entries_find_or_add( struct netcode_connect_token_entr
                                                uint8_t * mac, 
                                                uint64_t expire_timestamp, 
                                                uint64_t current_timestamp, 
-                                               double time )
+                                               double time,
+                                               int insecure )
 {
     netcode_assert( connect_token_entries );
     netcode_assert( address );
@@ -4031,12 +4040,25 @@ int netcode_connect_token_entries_find_or_add( struct netcode_connect_token_entr
     if ( matching_token_index == -1 )
     {
         if ( free_token_index == -1 )
+        {
+            for ( i = 0; i < NETCODE_MAX_CONNECT_TOKEN_ENTRIES; i++ )
+            {
+                if ( connect_token_entries[i].insecure && 
+                     ( free_token_index == -1 || connect_token_entries[i].time < connect_token_entries[free_token_index].time ) )
+                {
+                    free_token_index = i;
+                }
+            }
+        }
+
+        if ( free_token_index == -1 )
             return NETCODE_CONNECT_TOKEN_HISTORY_FULL;
 
         connect_token_entries[free_token_index].state = NETCODE_CONNECT_TOKEN_ENTRY_PENDING;
         connect_token_entries[free_token_index].time = time;
         connect_token_entries[free_token_index].expire_timestamp = expire_timestamp;
         connect_token_entries[free_token_index].address = *address;
+        connect_token_entries[free_token_index].insecure = insecure;
         memcpy( connect_token_entries[free_token_index].mac, mac, NETCODE_MAC_BYTES );
         return free_token_index;
     }
@@ -4707,12 +4729,19 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
         return;
     }
 
+    uint8_t zero_key[NETCODE_KEY_BYTES];
+    memset( zero_key, 0, sizeof( zero_key ) );
+
+    const int insecure_connect_token = packet->decrypted_with_insecure_key || 
+                                       memcmp( server->config.private_key, zero_key, NETCODE_KEY_BYTES ) == 0;
+
     int connect_token_entry_index = netcode_connect_token_entries_find_or_add( server->connect_token_entries, 
                                                                                from, 
                                                                                packet->connect_token_data + NETCODE_CONNECT_TOKEN_PRIVATE_BYTES - NETCODE_MAC_BYTES, 
                                                                                packet->connect_token_expire_timestamp, 
                                                                                current_timestamp, 
-                                                                               server->time );
+                                                                               server->time,
+                                                                               insecure_connect_token );
 
     if ( connect_token_entry_index == NETCODE_CONNECT_TOKEN_HISTORY_FULL )
     {
@@ -9578,7 +9607,7 @@ void test_connect_token_entries()
 
     mac[0] = 1;
 
-    int index = netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 100.0 );
+    int index = netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 100.0, 0 );
 
     check( index >= 0 );
     check( connect_token_entries[index].state == NETCODE_CONNECT_TOKEN_ENTRY_PENDING );
@@ -9587,20 +9616,20 @@ void test_connect_token_entries()
     // a pending entry admits a retransmitted connection request from the address that created it,
     // and the entry time is not refreshed
 
-    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 200.0 ) == index );
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 200.0, 0 ) == index );
     check( connect_token_entries[index].time == 100.0 );
 
     // a pending entry refuses every other address
 
-    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_b, mac, expire_timestamp, current_timestamp, 200.0 ) == NETCODE_CONNECT_TOKEN_ENTRY_REFUSED );
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_b, mac, expire_timestamp, current_timestamp, 200.0, 0 ) == NETCODE_CONNECT_TOKEN_ENTRY_REFUSED );
 
     // a consumed entry admits nothing, including the address that used the connect token
 
     netcode_connect_token_entries_consume( connect_token_entries, index );
 
     check( connect_token_entries[index].state == NETCODE_CONNECT_TOKEN_ENTRY_CONSUMED );
-    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 300.0 ) == NETCODE_CONNECT_TOKEN_ENTRY_REFUSED );
-    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_b, mac, expire_timestamp, current_timestamp, 300.0 ) == NETCODE_CONNECT_TOKEN_ENTRY_REFUSED );
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 300.0, 0 ) == NETCODE_CONNECT_TOKEN_ENTRY_REFUSED );
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_b, mac, expire_timestamp, current_timestamp, 300.0, 0 ) == NETCODE_CONNECT_TOKEN_ENTRY_REFUSED );
 
     // a history whose entries all hold unexpired connect tokens refuses a new connect token
     // instead of evicting one
@@ -9611,21 +9640,21 @@ void test_connect_token_entries()
         memset( mac, 0, NETCODE_MAC_BYTES );
         mac[0] = (uint8_t) ( i + 1 );
         mac[1] = (uint8_t) ( ( i + 1 ) >> 8 );
-        check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 400.0 ) >= 0 );
+        check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 400.0, 0 ) >= 0 );
     }
 
     memset( mac, 0, NETCODE_MAC_BYTES );
     mac[0] = 0xFF;
     mac[1] = 0xFF;
 
-    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 500.0 ) == NETCODE_CONNECT_TOKEN_HISTORY_FULL );
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 500.0, 0 ) == NETCODE_CONNECT_TOKEN_HISTORY_FULL );
 
     // the consumed entry is still refusing its connect token, and was not evicted by the flood
 
     memset( mac, 0, NETCODE_MAC_BYTES );
     mac[0] = 1;
 
-    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 500.0 ) == NETCODE_CONNECT_TOKEN_ENTRY_REFUSED );
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, current_timestamp, 500.0, 0 ) == NETCODE_CONNECT_TOKEN_ENTRY_REFUSED );
 
     // entries live until their connect token expires. once they have, the history takes new connect tokens again
 
@@ -9633,7 +9662,93 @@ void test_connect_token_entries()
     mac[0] = 0xFF;
     mac[1] = 0xFF;
 
-    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, expire_timestamp, 600.0 ) >= 0 );
+    check( netcode_connect_token_entries_find_or_add( connect_token_entries, &address_a, mac, expire_timestamp, expire_timestamp, 600.0, 0 ) >= 0 );
+}
+
+static int test_connect_token_history_contains( struct netcode_server_t * server, uint8_t * mac )
+{
+    int i;
+    for ( i = 0; i < NETCODE_MAX_CONNECT_TOKEN_ENTRIES; i++ )
+    {
+        if ( server->connect_token_entries[i].state != NETCODE_CONNECT_TOKEN_ENTRY_FREE && 
+             memcmp( server->connect_token_entries[i].mac, mac, NETCODE_MAC_BYTES ) == 0 )
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void test_connect_token_history_evicts_insecure_entries()
+{
+    // insecure connect tokens never expire, so more of them than the history has entries
+    // must not leave the server refusing every connect token from then on, secure ones too.
+
+    struct netcode_server_config_t server_config;
+    netcode_default_server_config( &server_config );
+    server_config.protocol_id = TEST_PROTOCOL_ID;
+    server_config.accept_insecure_connect_tokens = 1;
+    memcpy( &server_config.private_key, private_key, NETCODE_KEY_BYTES );
+
+    struct netcode_server_t * server = netcode_server_create( "[::1]:40000", &server_config, 0.0 );
+    check( server );
+    netcode_server_start( server, 1 );
+
+    struct netcode_address_t server_address;
+    check( netcode_parse_address( "[::1]:40000", &server_address ) == NETCODE_OK );
+
+    uint8_t user_data[NETCODE_USER_DATA_BYTES];
+    memset( user_data, 0, NETCODE_USER_DATA_BYTES );
+
+    const uint64_t current_timestamp = (uint64_t) time( NULL );
+
+    struct netcode_connection_request_packet_t packet;
+    uint8_t * packet_mac = packet.connect_token_data + NETCODE_CONNECT_TOKEN_PRIVATE_BYTES - NETCODE_MAC_BYTES;
+
+    int i;
+    for ( i = 0; i < NETCODE_MAX_CONNECT_TOKEN_ENTRIES + 16; i++ )
+    {
+        struct netcode_connect_token_private_t connect_token_private;
+        netcode_generate_connect_token_private( &connect_token_private, 1000 + i, TEST_TIMEOUT_SECONDS, 1, &server_address, user_data );
+
+        memset( &packet, 0, sizeof( packet ) );
+        netcode_write_connect_token_private( &connect_token_private, packet.connect_token_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES );
+        packet.connect_token_expire_timestamp = 0xFFFFFFFFFFFFFFFFULL;
+        packet.decrypted_with_insecure_key = 1;
+        memset( packet_mac, 0, NETCODE_MAC_BYTES );
+        memcpy( packet_mac, &i, sizeof( i ) );
+
+        struct netcode_address_t from;
+        char from_string[64];
+        snprintf( from_string, sizeof( from_string ), "[::1]:%d", 20000 + i );
+        check( netcode_parse_address( from_string, &from ) == NETCODE_OK );
+
+        netcode_server_process_connection_request_packet( server, &from, &packet, current_timestamp );
+
+        // still recorded, so a late duplicate of the request can not replace the keys of the handshake
+
+        check( test_connect_token_history_contains( server, packet_mac ) );
+    }
+
+    // a secure connect token still gets an entry
+
+    struct netcode_connect_token_private_t secure_token_private;
+    netcode_generate_connect_token_private( &secure_token_private, 1, TEST_TIMEOUT_SECONDS, 1, &server_address, user_data );
+
+    memset( &packet, 0, sizeof( packet ) );
+    netcode_write_connect_token_private( &secure_token_private, packet.connect_token_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES );
+    packet.connect_token_expire_timestamp = current_timestamp + TEST_CONNECT_TOKEN_EXPIRY;
+    packet.decrypted_with_insecure_key = 0;
+    memset( packet_mac, 0xAB, NETCODE_MAC_BYTES );
+
+    struct netcode_address_t secure_from;
+    check( netcode_parse_address( "[::1]:30000", &secure_from ) == NETCODE_OK );
+
+    netcode_server_process_connection_request_packet( server, &secure_from, &packet, current_timestamp );
+
+    check( test_connect_token_history_contains( server, packet_mac ) );
+
+    netcode_server_destroy( server );
 }
 
 /*
@@ -10698,6 +10813,7 @@ void netcode_test()
         RUN_TEST( test_server_client_disconnect_reason );
         RUN_TEST( test_client_reconnect );
         RUN_TEST( test_connect_token_entries );
+        RUN_TEST( test_connect_token_history_evicts_insecure_entries );
         RUN_TEST( test_client_server_connection_request_retransmission );
         RUN_TEST( test_client_server_replay_across_sessions );
         RUN_TEST( test_client_reconnect_with_used_connect_token );

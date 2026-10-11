@@ -3586,8 +3586,6 @@ struct netcode_server_t
     double rate_tokens[NETCODE_HANDSHAKE_RATE_BUCKETS];
     double global_rate_last_time;
     double global_rate_tokens;
-    double newcomer_rate_last_time;
-    double newcomer_rate_tokens;
     uint8_t used_cookies[NETCODE_USED_COOKIES][NETCODE_MAC_BYTES];
     int used_cookie_next;
     double rate_limit_last_logged;
@@ -3876,8 +3874,6 @@ void netcode_server_start( struct netcode_server_t * server, int max_clients )
 
         server->global_rate_last_time = server->time;
         server->global_rate_tokens = 2.0 * server->config.handshakes_per_second_global;
-        server->newcomer_rate_last_time = server->time;
-        server->newcomer_rate_tokens = 2.0 * server->config.handshakes_per_second_global;
     }
 
     server->global_sequence = 1ULL << 63;
@@ -4317,7 +4313,7 @@ static int netcode_is_unlimited_address( NETCODE_CONST struct netcode_address_t 
     that collides with another only shares its limit.
 */
 
-static int netcode_take_token( double * last_time, double * tokens_left, double now, double rate, double burst, double * tokens_before )
+static int netcode_take_token( double * last_time, double * tokens_left, double now, double rate, double burst )
 {
     double elapsed = now - *last_time;
 
@@ -4329,8 +4325,6 @@ static int netcode_take_token( double * last_time, double * tokens_left, double 
     if ( tokens > burst )
         tokens = burst;
 
-    if ( tokens_before )
-        *tokens_before = tokens;
 
     *last_time = now;
 
@@ -4344,14 +4338,10 @@ static int netcode_take_token( double * last_time, double * tokens_left, double 
     return 1;
 }
 
-static uint64_t netcode_server_rate_bucket( struct netcode_server_t * server, uint8_t tag, NETCODE_CONST uint8_t * data, int bytes )
+static uint64_t netcode_server_rate_bucket( struct netcode_server_t * server, NETCODE_CONST uint8_t * data, int bytes )
 {
-    uint8_t tagged[33];
-    tagged[0] = tag;
-    memcpy( tagged + 1, data, bytes );
-
     uint8_t hash[crypto_shorthash_BYTES];
-    crypto_shorthash( hash, tagged, (unsigned long long) ( bytes + 1 ), server->rate_key );
+    crypto_shorthash( hash, data, (unsigned long long) bytes, server->rate_key );
 
     uint8_t * h = hash;
     return netcode_read_uint64( &h ) % NETCODE_HANDSHAKE_RATE_BUCKETS;
@@ -4393,37 +4383,20 @@ static int netcode_server_take_handshake( struct netcode_server_t * server, NETC
         bytes = 8;
     }
 
-    const uint64_t index = netcode_server_rate_bucket( server, 64, data, bytes );
-    double own_tokens = 0.0;
+    const uint64_t index = netcode_server_rate_bucket( server, data, bytes );
 
-    if ( !netcode_take_token( &server->rate_last_time[index], &server->rate_tokens[index], server->time, rate, burst, &own_tokens ) )
+    if ( !netcode_take_token( &server->rate_last_time[index], &server->rate_tokens[index], server->time, rate, burst ) )
         return 0;
 
-    if ( address->type == NETCODE_ADDRESS_IPV6 )
-    {
-        // ... and often a whole /48 of them
-        const uint64_t index48 = netcode_server_rate_bucket( server, 48, data, 6 );
-        const double m = NETCODE_HANDSHAKE_PREFIX48_MULTIPLIER;
-
-        if ( !netcode_take_token( &server->rate_last_time[index48], &server->rate_tokens[index48], server->time, rate * m, burst * m, NULL ) )
-            return 0;
-    }
-
     /*
-        The global budget stops floods from many addresses. An idle address (its own bucket full - nothing from it lately)
-        draws from a second budget of the same size instead: a flood from busy addresses must not lock out players
-        who just arrive, and all the work stays bounded at twice the global rate.
+        A cap on the work for all addresses together, so that no flood lags the server - it refuses handshakes instead.
     */
 
     if ( server->config.handshakes_per_second_global > 0.0 )
     {
         const double global = server->config.handshakes_per_second_global;
-        const int idle = own_tokens >= burst;
 
-        double * last_time = idle ? &server->newcomer_rate_last_time : &server->global_rate_last_time;
-        double * tokens = idle ? &server->newcomer_rate_tokens : &server->global_rate_tokens;
-
-        if ( !netcode_take_token( last_time, tokens, server->time, global, 2.0 * global, NULL ) )
+        if ( !netcode_take_token( &server->global_rate_last_time, &server->global_rate_tokens, server->time, global, 2.0 * global ) )
             return 0;
     }
 
@@ -9823,71 +9796,27 @@ void test_handshake_version_mismatch()
     test_wire_destroy();
 }
 
-void test_handshake_rate_limit_prefix48_and_global()
+void test_handshake_rate_limit_global()
 {
     test_wire_create( 0 );
 
     struct netcode_server_t * server = test_wire.server;
 
     server->config.handshakes_per_second_per_address = 1.0;
-    server->config.handshake_burst_per_address = 2.0;
-
-    int bucket;
-    for ( bucket = 0; bucket < NETCODE_HANDSHAKE_RATE_BUCKETS; bucket++ )
-    {
-        server->rate_tokens[bucket] = 8.0;
-        server->rate_last_time[bucket] = server->time;
-    }
-
-    // a /48 gets NETCODE_HANDSHAKE_PREFIX48_MULTIPLIER (4) times one /64's burst, however many /64s it rotates through
-
-    int i;
-    for ( i = 0; i < 8; i++ )
-    {
-        char text[64];
-        snprintf( text, sizeof( text ), "[2001:db8:7:%x::1]:1000", i );
-        struct netcode_address_t address;
-        check( netcode_parse_address( text, &address ) == NETCODE_OK );
-        check( netcode_server_take_handshake( server, &address ) );
-    }
-
-    struct netcode_address_t ninth, other_48;
-    check( netcode_parse_address( "[2001:db8:7:99::1]:1000", &ninth ) == NETCODE_OK );
-    check( netcode_parse_address( "[2001:db8:8:1::1]:1000", &other_48 ) == NETCODE_OK );
-    check( !netcode_server_take_handshake( server, &ninth ) );
-    check( netcode_server_take_handshake( server, &other_48 ) );
-
-    // all addresses together: the global budget - which an address that has not handshaken lately passes anyway
-
     server->config.handshake_burst_per_address = 10.0;
     server->config.handshakes_per_second_global = 1.0;
     server->global_rate_tokens = 2.0;
     server->global_rate_last_time = server->time;
 
-    for ( bucket = 0; bucket < NETCODE_HANDSHAKE_RATE_BUCKETS; bucket++ )
-    {
-        server->rate_tokens[bucket] = 10.0;
-        server->rate_last_time[bucket] = server->time;
-    }
+    // all addresses together: two, then none
 
-    struct netcode_address_t c, d;
+    struct netcode_address_t c, d, e;
     check( netcode_parse_address( "10.1.0.1:1000", &c ) == NETCODE_OK );
     check( netcode_parse_address( "10.1.0.2:1000", &d ) == NETCODE_OK );
-
-    check( netcode_server_take_handshake( server, &c ) );   // idle: from the newcomers' budget
-    check( netcode_server_take_handshake( server, &c ) );   // global 2 -> 1
-    check( netcode_server_take_handshake( server, &c ) );   // global 1 -> 0
-    check( !netcode_server_take_handshake( server, &c ) );  // global budget used up
-    check( netcode_server_take_handshake( server, &d ) );   // a newcomer still gets in
-
-    // and the newcomers' budget is bounded too
-
-    server->newcomer_rate_tokens = 0.0;
-    server->newcomer_rate_last_time = server->time;
-
-    struct netcode_address_t f;
-    check( netcode_parse_address( "10.1.0.3:1000", &f ) == NETCODE_OK );
-    check( !netcode_server_take_handshake( server, &f ) );
+    check( netcode_parse_address( "10.1.0.3:1000", &e ) == NETCODE_OK );
+    check( netcode_server_take_handshake( server, &c ) );
+    check( netcode_server_take_handshake( server, &d ) );
+    check( !netcode_server_take_handshake( server, &e ) );
 
     test_wire_destroy();
 }
@@ -10096,7 +10025,7 @@ void netcode_test()
         RUN_TEST( test_handshake_forged_challenge_other_key );
         RUN_TEST( test_handshake_version_mismatch );
         RUN_TEST( test_handshake_rate_limit );
-        RUN_TEST( test_handshake_rate_limit_prefix48_and_global );
+        RUN_TEST( test_handshake_rate_limit_global );
         RUN_TEST( test_handshake_nothing_accumulates );
 #if NETCODE_PACKET_TAGGING
         RUN_TEST( test_packet_tagging );

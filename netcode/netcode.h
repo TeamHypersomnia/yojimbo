@@ -117,7 +117,6 @@
 #define NETCODE_DEFAULT_HANDSHAKES_PER_SECOND_PER_ADDRESS 20.0
 #define NETCODE_DEFAULT_HANDSHAKE_BURST_PER_ADDRESS 40.0
 #define NETCODE_DEFAULT_HANDSHAKES_PER_SECOND_GLOBAL 400.0
-#define NETCODE_HANDSHAKE_PREFIX48_MULTIPLIER 4.0
 
 #define NETCODE_CLIENT_STATE_SERVER_KEY_MISMATCH                -8
 #define NETCODE_CLIENT_STATE_VERSION_MISMATCH                   -7
@@ -367,9 +366,8 @@ struct netcode_server_config_t
     Opening a sealed box costs an X25519 (with the Ed25519 checks the application does, ~0.2 ms), so each
     address gets handshakes_per_second_per_address of them, with bursts up to handshake_burst_per_address.
     The counters live in a fixed table hashed by address (IPv6 by its /64): it never grows or fills,
-    collisions only share a limit. An IPv6 /48 - which one user can hold - also gets only NETCODE_HANDSHAKE_PREFIX48_MULTIPLIER
-    times as much, and all addresses together handshakes_per_second_global (zero or less: no global limit), so that no flood
-    lags the server - it refuses handshakes instead. Loopback addresses are not limited.
+    collisions only share a limit. All addresses together get handshakes_per_second_global (zero or less: no global limit),
+    so that no flood lags the server - it refuses handshakes instead. Loopback addresses are not limited.
 */
 
 void netcode_default_server_config( struct netcode_server_config_t * config );

@@ -90,15 +90,35 @@
 #define NETCODE_PLATFORM NETCODE_PLATFORM_UNIX
 #endif
 
-#define NETCODE_CONNECT_TOKEN_BYTES 2048
 #define NETCODE_KEY_BYTES 32
 #define NETCODE_MAC_BYTES 16
-#define NETCODE_USER_DATA_BYTES 256
+#define NETCODE_USER_DATA_BYTES 960
 #define NETCODE_MAX_SERVERS_PER_CONNECT 32
-#define NETCODE_DEFAULT_MAX_CONNECT_TOKEN_LIFETIME 30
 
-#define NETCODE_CLIENT_STATE_CONNECT_TOKEN_EXPIRED              -6
-#define NETCODE_CLIENT_STATE_INVALID_CONNECT_TOKEN              -5
+/*
+    Hypersomnia: there are no connect tokens. Every server has an Ed25519 key pair
+    (the X25519 key it seals to is derived from it). The handshake:
+
+        client -> server   REQUEST    version and protocol id, padded so that no answer is larger
+        server -> client   CHALLENGE  a stateless cookie bound to the client address, the server public key, flags
+        client -> server   RESPONSE   the cookie and a sealed box to the server key holding the cookie again,
+                                      a fresh connection secret, the session signature and the user data
+
+    The packet keys are derived from the connection secret. The session signature is made with the
+    session secret key given to netcode_client_connect over the connection binding (see netcode_connection_binding),
+    so the application on the server can tell which session key this very connection belongs to.
+*/
+
+#define NETCODE_PUBLIC_KEY_BYTES 32
+#define NETCODE_SECRET_KEY_BYTES 64
+#define NETCODE_SIGNATURE_BYTES 64
+#define NETCODE_BINDING_BYTES 32
+#define NETCODE_DEFAULT_CONNECT_TIMEOUT_SECONDS 5
+#define NETCODE_DEFAULT_HANDSHAKES_PER_SECOND_PER_ADDRESS 20.0
+#define NETCODE_DEFAULT_HANDSHAKE_BURST_PER_ADDRESS 40.0
+
+#define NETCODE_CLIENT_STATE_SERVER_KEY_MISMATCH                -8
+#define NETCODE_CLIENT_STATE_VERSION_MISMATCH                   -7
 #define NETCODE_CLIENT_STATE_CONNECTION_TIMED_OUT               -4
 #define NETCODE_CLIENT_STATE_CONNECTION_RESPONSE_TIMED_OUT      -3
 #define NETCODE_CLIENT_STATE_CONNECTION_REQUEST_TIMED_OUT       -2
@@ -135,6 +155,7 @@
 #define NETCODE_SERVER_CREATE_ERROR_BIND_SOCKET_IPV6_FAILED     6
 #define NETCODE_SERVER_CREATE_ERROR_ALLOCATE_SERVER_FAILED      7
 #define NETCODE_SERVER_CREATE_ERROR_MISSING_OVERRIDE_CALLBACK   8
+#define NETCODE_SERVER_CREATE_ERROR_INVALID_PRIVATE_KEY         9
 
 #define NETCODE_MAX_CLIENTS         256
 #define NETCODE_MAX_PACKET_SIZE     1200
@@ -214,7 +235,16 @@ struct netcode_client_config_t
 
 	bool (*auxiliary_command_function)(void*,uint8_t*,int);
 	void * auxiliary_command_context;
+
+    uint64_t protocol_id;
+    int connect_timeout_seconds;
+    int timeout_seconds;
 };
+
+/*
+    connect_timeout_seconds limits each attempt to connect to one server address, timeout_seconds
+    the silence on an established connection (zero or less disables it).
+*/
 
 void netcode_default_client_config( struct netcode_client_config_t * config );
 
@@ -232,7 +262,29 @@ int netcode_client_create_error();
 
 void netcode_client_destroy( struct netcode_client_t * client );
 
-void netcode_client_connect( struct netcode_client_t * client, uint8_t * connect_token );
+/*
+    Connects to the first of the server addresses, then the next ones after a failed attempt.
+
+    expected_server_public_key: the server's Ed25519 public key, e.g. from the server list, or NULL to take
+    whatever key the server presents (connecting by address). A challenge with another key is ignored,
+    and an attempt that saw only such challenges ends in NETCODE_CLIENT_STATE_SERVER_KEY_MISMATCH.
+
+    session_secret_key: the Ed25519 secret key (seed and public key, 64 bytes) to sign the connection binding with,
+    or NULL to send no signature. user_data: NETCODE_USER_DATA_BYTES given to the server in the sealed box, or NULL for zeros.
+*/
+
+void netcode_client_connect( struct netcode_client_t * client, 
+                             int num_server_addresses,
+                             NETCODE_CONST struct netcode_address_t * server_addresses,
+                             NETCODE_CONST uint8_t * expected_server_public_key,
+                             NETCODE_CONST uint8_t * session_secret_key,
+                             NETCODE_CONST uint8_t * user_data );
+
+/*
+    The public key the server presented in the last attempt, or NULL before any challenge was accepted.
+*/
+
+NETCODE_CONST uint8_t * netcode_client_server_public_key( struct netcode_client_t * client );
 
 void netcode_client_update( struct netcode_client_t * client, double time );
 
@@ -266,21 +318,21 @@ uint16_t netcode_client_get_port( struct netcode_client_t * client );
 
 struct netcode_address_t * netcode_client_server_address( struct netcode_client_t * client );
 
-int netcode_generate_connect_token( int num_server_addresses, 
-                                    NETCODE_CONST char ** public_server_addresses, 
-                                    NETCODE_CONST char ** internal_server_addresses, 
-                                    int expire_seconds,
-                                    int timeout_seconds, 
-                                    uint64_t client_id, 
-                                    uint64_t protocol_id, 
-                                    NETCODE_CONST uint8_t * private_key, 
-                                    uint8_t * user_data, 
-                                    uint8_t * connect_token );
+/*
+    What the session signature covers: BLAKE2b-256 of "hs-conn-v1", the version info, the protocol id,
+    the server public key, the connection secret and the cookie.
+*/
+
+void netcode_connection_binding( uint8_t * binding,
+                                 uint64_t protocol_id,
+                                 NETCODE_CONST uint8_t * server_public_key,
+                                 NETCODE_CONST uint8_t * connection_secret,
+                                 NETCODE_CONST uint8_t * cookie );
 
 struct netcode_server_config_t
 {
     uint64_t protocol_id;
-    uint8_t private_key[NETCODE_KEY_BYTES];
+    uint8_t private_key[NETCODE_SECRET_KEY_BYTES];
     void * allocator_context;
     void * (*allocate_function)(void*,size_t);
     void (*free_function)(void*,void*);
@@ -291,7 +343,6 @@ struct netcode_server_config_t
     int override_send_and_receive;
     void (*send_packet_override)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
     int (*receive_packet_override)(void*,struct netcode_address_t*,uint8_t*,int);
-    int max_connect_token_lifetime;
 
     bool (*aux_send_packet)(void*,struct netcode_address_t*,NETCODE_CONST uint8_t*,int);
     int (*aux_receive_packet)(void*,struct netcode_address_t*,uint8_t*,int);
@@ -299,18 +350,21 @@ struct netcode_server_config_t
 	bool (*auxiliary_command_function)(void*,struct netcode_address_t*,uint8_t*,int);
 	void * auxiliary_command_context;
 	int disable_disconnect_packets;
-	int accept_insecure_connect_tokens;
+
+    int timeout_seconds;
+    double handshakes_per_second_per_address;
+    double handshake_burst_per_address;
 };
 
 /*
-    max_connect_token_lifetime is the longest lifetime in seconds that the backend issues
-    connect tokens with, as passed to netcode_generate_connect_token. The server ignores any
-    connection request whose connect token expire timestamp minus this lifetime is earlier
-    than the time the server started, so a connect token that could have been issued before
-    the server started cannot be presented after it. Set it to the lifetime your backend
-    issues: a larger value rejects legitimate connect tokens until the difference has elapsed,
-    and a smaller value lets connect tokens issued shortly before the server started through.
-    A value of zero or less takes NETCODE_DEFAULT_MAX_CONNECT_TOKEN_LIFETIME instead.
+    private_key is the server's Ed25519 secret key (seed and public key, as libsodium keeps it).
+
+    timeout_seconds: the silence after which a connected client is dropped (zero or less disables it).
+
+    Opening a sealed box costs an X25519 (with the Ed25519 checks the application does, ~0.2 ms), so each
+    address gets handshakes_per_second_per_address of them, with bursts up to handshake_burst_per_address.
+    The counters live in a fixed table hashed by address (IPv6 by its /64): it never grows or fills,
+    collisions only share a limit. Loopback addresses are not limited.
 */
 
 void netcode_default_server_config( struct netcode_server_config_t * config );
@@ -364,6 +418,17 @@ void netcode_server_free_packet( struct netcode_server_t * server, void * packet
 int netcode_server_num_connected_clients( struct netcode_server_t * server );
 
 void * netcode_server_client_user_data( struct netcode_server_t * server, int client_index );
+
+/*
+    The connection binding and the session signature the client sent over it (all zero if it sent none,
+    and for loopback clients). The application verifies the signature against the session key it trusts.
+*/
+
+NETCODE_CONST uint8_t * netcode_server_client_binding( struct netcode_server_t * server, int client_index );
+
+NETCODE_CONST uint8_t * netcode_server_client_session_signature( struct netcode_server_t * server, int client_index );
+
+NETCODE_CONST uint8_t * netcode_server_public_key( struct netcode_server_t * server );
 
 void netcode_server_process_packet( struct netcode_server_t * server, struct netcode_address_t * from, uint8_t * packet_data, int packet_bytes );
 

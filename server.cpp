@@ -72,8 +72,8 @@ int ServerMain()
 
     ClientServerConfig config;
 
-    uint8_t privateKey[KeyBytes];
-    memset( privateKey, 0, KeyBytes );
+    uint8_t privateKey[ServerSecretKeyBytes];
+    ExampleServerKey( privateKey );
 
     ServerAdapter serverAdapter;
 

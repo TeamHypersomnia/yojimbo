@@ -60,8 +60,8 @@ int SoakMain( int iterations )
     config.channel[RELIABLE_ORDERED_CHANNEL].maxBlockSize = MaxBlockSize;
     config.channel[RELIABLE_ORDERED_CHANNEL].blockFragmentSize = 1024;
 
-    uint8_t privateKey[KeyBytes];
-    memset( privateKey, 0, KeyBytes );
+    uint8_t privateKey[ServerSecretKeyBytes];
+    ExampleServerKey( privateKey );
 
     double time = 0.0;
 
@@ -81,7 +81,7 @@ int SoakMain( int iterations )
 
     Client client( GetDefaultAllocator(), Address("0.0.0.0"), config, adapter, time );
 
-    client.InsecureConnect( privateKey, clientId, serverAddress );
+    client.Connect( &serverAddress, 1, NULL, NULL, NULL );
 
     client.SetLatency( 1000.0f );
     client.SetJitter( 100.0f );
@@ -129,7 +129,7 @@ int SoakMain( int iterations )
             {
                 printf( "client reconnect\n" );
                 client.Disconnect();
-                client.InsecureConnect( privateKey, clientId, serverAddress );
+                client.Connect( &serverAddress, 1, NULL, NULL, NULL );
                 clientConnected = false;
                 numMessagesSentToServer = 0;
                 numMessagesSentToClient = 0;

@@ -57,8 +57,8 @@ namespace yojimbo
         YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_REQUEST_TIMED_OUT,      ///< No response from the server to our connection request. Server not running, unreachable, or wrong address.
         YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_RESPONSE_TIMED_OUT,     ///< No response from the server to our challenge response while establishing the connection.
         YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_TIMED_OUT,              ///< The established connection timed out. We stopped hearing from the server.
-        YOJIMBO_CLIENT_DISCONNECT_REASON_INVALID_CONNECT_TOKEN,             ///< The connect token is invalid, or could not be generated.
-        YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECT_TOKEN_EXPIRED,             ///< The connect token expired before we could connect. Request a fresh one from the matchmaker and retry.
+        YOJIMBO_CLIENT_DISCONNECT_REASON_SERVER_KEY_MISMATCH,               ///< The server presented another public key than the one expected (e.g. from the server list).
+        YOJIMBO_CLIENT_DISCONNECT_REASON_VERSION_MISMATCH,                  ///< The server runs another version of the protocol.
         YOJIMBO_CLIENT_DISCONNECT_REASON_FAILED_TO_SERIALIZE,               ///< A message from the server failed to serialize read. Usually a client/server protocol version mismatch, or a bug in a message serialize function.
         YOJIMBO_CLIENT_DISCONNECT_REASON_DESYNC,                            ///< A channel desynced and cannot recover. See CHANNEL_ERROR_DESYNC.
         YOJIMBO_CLIENT_DISCONNECT_REASON_SEND_QUEUE_FULL,                   ///< A channel send queue filled up. See CHANNEL_ERROR_SEND_QUEUE_FULL.
@@ -81,8 +81,8 @@ namespace yojimbo
             case YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_REQUEST_TIMED_OUT:     return "connection request timed out";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_RESPONSE_TIMED_OUT:    return "connection response timed out";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_TIMED_OUT:             return "connection timed out";
-            case YOJIMBO_CLIENT_DISCONNECT_REASON_INVALID_CONNECT_TOKEN:            return "invalid connect token";
-            case YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECT_TOKEN_EXPIRED:            return "connect token expired";
+            case YOJIMBO_CLIENT_DISCONNECT_REASON_SERVER_KEY_MISMATCH:              return "server key mismatch";
+            case YOJIMBO_CLIENT_DISCONNECT_REASON_VERSION_MISMATCH:                 return "version mismatch";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_FAILED_TO_SERIALIZE:              return "failed to serialize";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_DESYNC:                           return "desync";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_SEND_QUEUE_FULL:                  return "send queue full";
@@ -118,22 +118,18 @@ namespace yojimbo
         ~Client();
 
         /**
-            Connect to a server with a locally generated connect token.
-            @returns True if the connect attempt started. False if the client ran out of memory or could not generate the token, in which case nothing is allocated and the client is left disconnected or in the error state.
+            Connect to the first server address that answers, in order.
+            @param expectedServerPublicKey The server's Ed25519 public key (ServerPublicKeyBytes), or NULL to take the one it presents.
+            @param sessionSecretKey The Ed25519 secret key (ServerSecretKeyBytes) the connection binding is signed with, or NULL.
+            @param userData UserDataBytes handed to the server sealed, or NULL for zeros.
+            @returns True if the connect attempt started. False if the client ran out of memory or could not open its socket. In every false case nothing stays allocated.
          */
 
-        bool InsecureConnect( const uint8_t privateKey[], uint64_t clientId, const Address & address );
+        bool Connect( const Address serverAddresses[], int numServerAddresses, const uint8_t * expectedServerPublicKey, const uint8_t * sessionSecretKey, const uint8_t * userData );
 
-        /// @see Client::InsecureConnect
+        /// The public key the server presented, or NULL before the handshake got that far.
 
-        bool InsecureConnect( const uint8_t privateKey[], uint64_t clientId, const Address serverAddresses[], int numServerAddresses );
-
-        /**
-            Connect to a server with a connect token from a matchmaker.
-            @returns True if the connect attempt started. False if the client ran out of memory, could not open its socket, or the token was rejected. In every false case nothing stays allocated.
-         */
-
-        bool Connect( uint64_t clientId, uint8_t * connectToken );
+        const uint8_t * GetServerPublicKey() const;
 
         void Disconnect() YOJIMBO_OVERRIDE;
 
@@ -167,12 +163,6 @@ namespace yojimbo
 		client_adapter* GetParent() const { return m_parent; }
 
     private:
-
-        bool GenerateInsecureConnectToken( uint8_t * connectToken,
-                                           const uint8_t privateKey[],
-                                           uint64_t clientId,
-                                           const Address serverAddresses[],
-                                           int numServerAddresses );
 
         void CreateClient( const Address & address );
 

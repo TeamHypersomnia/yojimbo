@@ -67,10 +67,10 @@ int ClientMain( int argc, char * argv[] )
         }
     }
 
-    uint8_t privateKey[KeyBytes];
-    memset( privateKey, 0, KeyBytes );
+    uint8_t privateKey[ServerSecretKeyBytes];
+    ExampleServerKey( privateKey );
 
-    client.InsecureConnect( privateKey, clientId, serverAddress );
+    client.Connect( &serverAddress, 1, NULL, NULL, NULL );
 
     char addressString[256];
     client.GetAddress().ToString( addressString, sizeof( addressString ) );

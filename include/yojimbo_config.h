@@ -249,7 +249,9 @@ namespace yojimbo
         int ackedPacketsBufferSize;                             ///< Number of packet entries in the acked packet buffer. Consider your packet send rate and aim to have at least a few seconds worth of entries.
         int receivedPacketsBufferSize;                          ///< Number of packet entries in the received packet sequence buffer. Consider your packet send rate and aim to have at least a few seconds worth of entries.
         float rttSmoothingFactor;                               ///< Round-Trip Time (RTT) smoothing factor over time.
-        int maxConnectTokenLifetime;                            ///< The longest lifetime in seconds your backend issues connect tokens with. Server only. The server refuses any connect token whose expiry, minus this lifetime, is earlier than the time the server started, so a token that could have been issued before a restart cannot be presented after it. Set it to the lifetime your matchmaker actually issues: too large refuses legitimate connect tokens until the difference has elapsed, too small lets tokens issued shortly before the server started through. Zero or less takes DefaultMaxConnectTokenLifetime.
+        int connectTimeout;                                     ///< Seconds a client gives each server address to complete the handshake. Client only.
+        double handshakesPerSecondPerAddress;                   ///< Handshakes (each an X25519) the server opens per second from one address, IPv6 /64 or WebRTC peer. Server only. Zero or less disables the limit.
+        double handshakeBurstPerAddress;                        ///< How many handshakes one address may make at once before the per second limit applies. Server only.
 
         ClientServerConfig()
         {
@@ -267,7 +269,9 @@ namespace yojimbo
             ackedPacketsBufferSize = 256;
             receivedPacketsBufferSize = 256;
             rttSmoothingFactor = 0.0025f;
-            maxConnectTokenLifetime = DefaultMaxConnectTokenLifetime;
+            connectTimeout = DefaultConnectTimeout;
+            handshakesPerSecondPerAddress = 20.0;
+            handshakeBurstPerAddress = 40.0;
         }
 
         /**

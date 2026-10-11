@@ -81,8 +81,8 @@ int ClientServerMain()
 
     LoopbackAdapter loopbackAdapter;
 
-    uint8_t privateKey[KeyBytes];
-    memset( privateKey, 0, KeyBytes );
+    uint8_t privateKey[ServerSecretKeyBytes];
+    ExampleServerKey( privateKey );
 
     printf( "starting server on port %d\n", ServerPort );
 

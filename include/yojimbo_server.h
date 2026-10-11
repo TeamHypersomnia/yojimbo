@@ -95,6 +95,8 @@ namespace yojimbo
     {
     public:
 
+        /// privateKey: the server's Ed25519 secret key, ServerSecretKeyBytes (seed and public key).
+
         Server( Allocator & allocator, const uint8_t privateKey[], const Address & address, const ClientServerConfig & config, Adapter & adapter, double time, server_adapter* parent = NULL );
 
         ~Server();
@@ -118,6 +120,18 @@ namespace yojimbo
         uint64_t GetClientId( int clientIndex ) const YOJIMBO_OVERRIDE;
 
         const uint8_t * GetClientUserData( int clientIndex ) const YOJIMBO_OVERRIDE;
+
+        /// What the client's session signature covers (NETCODE_BINDING_BYTES), see netcode_connection_binding.
+
+        const uint8_t * GetClientBinding( int clientIndex ) const;
+
+        /// The client's Ed25519 signature over its binding (NETCODE_SIGNATURE_BYTES), all zero if it sent none.
+
+        const uint8_t * GetClientSessionSignature( int clientIndex ) const;
+
+        /// The server's Ed25519 public key (ServerPublicKeyBytes), or NULL while not running.
+
+        const uint8_t * GetPublicKey() const;
 
         netcode_address_t * GetClientAddress( int clientIndex ) const YOJIMBO_OVERRIDE;
 
@@ -164,7 +178,7 @@ namespace yojimbo
         netcode_server_t * m_server;
         Address m_address;                                  // original address passed to ctor
         Address m_boundAddress;                             // address after socket bind, eg. valid port. custom packet I/O: stays the ctor-supplied synthetic address (no socket bind)
-        uint8_t m_privateKey[KeyBytes];
+        uint8_t m_privateKey[ServerSecretKeyBytes];
         bool m_stopping;                                    // true while Stop tears the server down. makes a reentrant Stop from an adapter callback during teardown a harmless no-op
 
 		server_adapter* m_parent;

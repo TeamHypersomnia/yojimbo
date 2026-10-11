@@ -35,11 +35,13 @@ namespace yojimbo
 
     const int KeyBytes = 32;                                        ///< Size of encryption key for dedicated client/server in bytes. Must be equal to key size for libsodium encryption primitive. Do not change.
 
-    const int ConnectTokenBytes = 2048;                             ///< Size of the encrypted connect token data return from the matchmaker. Must equal size of NETCODE_CONNECT_TOKEN_BYTE (2048).
+    const int ServerSecretKeyBytes = 64;                            ///< Size of a server's Ed25519 secret key (seed and public key). Must equal NETCODE_SECRET_KEY_BYTES.
 
-    const int DefaultMaxConnectTokenLifetime = 30;                  ///< Default for ClientServerConfig::maxConnectTokenLifetime (seconds). Must equal NETCODE_DEFAULT_MAX_CONNECT_TOKEN_LIFETIME (30). The matcher under matcher/ issues 45 second connect tokens, so a deployment running it as-is sets maxConnectTokenLifetime to 45.
+    const int ServerPublicKeyBytes = 32;                            ///< Size of a server's Ed25519 public key. Must equal NETCODE_PUBLIC_KEY_BYTES.
 
-    const int InsecureConnectTokenExpirySeconds = 60;               ///< Expiry for insecure connect tokens (seconds). Kept well above the connection timeout so a failed insecure connect reports "connection request timed out" like a secure connect token from a matchmaker would, rather than hitting token expiry first.
+    const int UserDataBytes = 960;                                  ///< Size of the user data a client hands the server in its sealed handshake. Must equal NETCODE_USER_DATA_BYTES.
+
+    const int DefaultConnectTimeout = 5;                            ///< Default for ClientServerConfig::connectTimeout (seconds) - per server address. Must equal NETCODE_DEFAULT_CONNECT_TIMEOUT_SECONDS.
 
     const int ConservativeMessageHeaderBits = 32;                   ///< Conservative number of bits per-message header.
     

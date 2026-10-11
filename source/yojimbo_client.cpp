@@ -15,8 +15,8 @@ namespace yojimbo
     {
         switch ( netcodeState )
         {
-            case NETCODE_CLIENT_STATE_CONNECT_TOKEN_EXPIRED:            return YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECT_TOKEN_EXPIRED;
-            case NETCODE_CLIENT_STATE_INVALID_CONNECT_TOKEN:            return YOJIMBO_CLIENT_DISCONNECT_REASON_INVALID_CONNECT_TOKEN;
+            case NETCODE_CLIENT_STATE_SERVER_KEY_MISMATCH:              return YOJIMBO_CLIENT_DISCONNECT_REASON_SERVER_KEY_MISMATCH;
+            case NETCODE_CLIENT_STATE_VERSION_MISMATCH:                 return YOJIMBO_CLIENT_DISCONNECT_REASON_VERSION_MISMATCH;
             case NETCODE_CLIENT_STATE_CONNECTION_TIMED_OUT:             return YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_TIMED_OUT;
             case NETCODE_CLIENT_STATE_CONNECTION_RESPONSE_TIMED_OUT:    return YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_RESPONSE_TIMED_OUT;
             case NETCODE_CLIENT_STATE_CONNECTION_REQUEST_TIMED_OUT:     return YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_REQUEST_TIMED_OUT;
@@ -41,12 +41,7 @@ namespace yojimbo
         yojimbo_assert( m_client == NULL );
     }
 
-    bool Client::InsecureConnect( const uint8_t privateKey[], uint64_t clientId, const Address & address )
-    {
-        return InsecureConnect( privateKey, clientId, &address, 1 );
-    }
-
-    bool Client::InsecureConnect( const uint8_t privateKey[], uint64_t clientId, const Address serverAddresses[], int numServerAddresses )
+    bool Client::Connect( const Address serverAddresses[], int numServerAddresses, const uint8_t * expectedServerPublicKey, const uint8_t * sessionSecretKey, const uint8_t * userData )
     {
         yojimbo_assert( serverAddresses );
         yojimbo_assert( numServerAddresses > 0 );
@@ -61,70 +56,7 @@ namespace yojimbo
             return false;
         }
         SetDisconnectReason( YOJIMBO_CLIENT_DISCONNECT_REASON_NONE );       // new connect attempt: clear the reason from any previous disconnect
-        m_clientId = clientId;
-        CreateClient( m_address );
-        if ( !m_client )
-        {
-            Disconnect();
-            return false;
-        }
-        uint8_t connectToken[NETCODE_CONNECT_TOKEN_BYTES];
-        if ( !GenerateInsecureConnectToken( connectToken, privateKey, clientId, serverAddresses, numServerAddresses ) )
-        {
-            yojimbo_printf( YOJIMBO_LOG_LEVEL_ERROR, "error: failed to generate insecure connect token\n" );
-            SetDisconnectReason( YOJIMBO_CLIENT_DISCONNECT_REASON_INVALID_CONNECT_TOKEN );
-            SetClientState( CLIENT_STATE_ERROR );
-            return false;
-        }
-        netcode_client_connect( m_client, connectToken );
-        SetClientState( CLIENT_STATE_CONNECTING );
-        return true;
-    }
-
-    bool Client::GenerateInsecureConnectToken( uint8_t * connectToken, 
-                                               const uint8_t privateKey[], 
-                                               uint64_t clientId, 
-                                               const Address serverAddresses[], 
-                                               int numServerAddresses )
-    {
-        char serverAddressStrings[NETCODE_MAX_SERVERS_PER_CONNECT][MaxAddressLength];
-        const char * serverAddressStringPointers[NETCODE_MAX_SERVERS_PER_CONNECT];
-        for ( int i = 0; i < numServerAddresses; ++i ) 
-        {
-            serverAddresses[i].ToString( serverAddressStrings[i], MaxAddressLength );
-            serverAddressStringPointers[i] = serverAddressStrings[i];
-        }
-
-        uint8_t userData[256];
-        memset( &userData, 0, sizeof(userData) );
-
-        // Hypersomnia: insecure connect tokens are minted on the client with the client's clock,
-        // so any finite expiry breaks connecting whenever the client's clock lags the server's.
-        // They carry no security anyway (the private key is all zeros), so never expire them.
-        return netcode_generate_connect_token( numServerAddresses,
-                                               serverAddressStringPointers,
-                                               serverAddressStringPointers,
-                                               -1,
-                                               m_config.timeout,
-                                               clientId,
-                                               m_config.protocolId,
-                                               (uint8_t*)privateKey,
-                                               &userData[0],
-                                               connectToken ) == NETCODE_OK;
-    }
-
-    bool Client::Connect( uint64_t clientId, uint8_t * connectToken )
-    {
-        yojimbo_assert( connectToken );
-        Disconnect();
-        if ( !CreateInternal() )
-        {
-            SetDisconnectReason( YOJIMBO_CLIENT_DISCONNECT_REASON_OUT_OF_MEMORY );
-            SetClientState( CLIENT_STATE_ERROR );
-            return false;
-        }
-        SetDisconnectReason( YOJIMBO_CLIENT_DISCONNECT_REASON_NONE );       // new connect attempt: clear the reason from any previous disconnect
-        m_clientId = clientId;
+        m_clientId = 0;
         CreateClient( m_address );
         if ( !m_client )
         {
@@ -133,16 +65,19 @@ namespace yojimbo
             Disconnect();
             return false;
         }
-        netcode_client_connect( m_client, connectToken );
-        if ( netcode_client_state( m_client ) > NETCODE_CLIENT_STATE_DISCONNECTED )
+        netcode_address_t addresses[NETCODE_MAX_SERVERS_PER_CONNECT];
+        for ( int i = 0; i < numServerAddresses; ++i )
         {
-            SetClientState( CLIENT_STATE_CONNECTING );
-            return true;
+            AddressToNetcode( serverAddresses[i], addresses[i] );
         }
-        // The connect failed immediately, eg. an invalid connect token.
-        SetDisconnectReason( ClientDisconnectReasonForNetcodeState( netcode_client_state( m_client ) ) );
-        Disconnect();
-        return false;
+        netcode_client_connect( m_client, numServerAddresses, addresses, expectedServerPublicKey, sessionSecretKey, userData );
+        SetClientState( CLIENT_STATE_CONNECTING );
+        return true;
+    }
+
+    const uint8_t * Client::GetServerPublicKey() const
+    {
+        return m_client ? netcode_client_server_public_key( m_client ) : NULL;
     }
 
     void Client::Disconnect()
@@ -336,6 +271,9 @@ namespace yojimbo
         netcodeConfig.callback_context              = this;
         netcodeConfig.state_change_callback         = StaticStateChangeCallbackFunction;
         netcodeConfig.send_loopback_packet_callback = StaticSendLoopbackPacketCallbackFunction;
+        netcodeConfig.protocol_id                   = m_config.protocolId;
+        netcodeConfig.connect_timeout_seconds       = m_config.connectTimeout;
+        netcodeConfig.timeout_seconds               = m_config.timeout;
         const bool useCustomPacketIO = GetAdapter().UseCustomPacketIO();
         if ( useCustomPacketIO )
         {

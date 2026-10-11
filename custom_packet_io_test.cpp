@@ -168,14 +168,14 @@ int main()
         config.channel[0].type = CHANNEL_TYPE_RELIABLE_ORDERED;
         config.channel[1].type = CHANNEL_TYPE_UNRELIABLE_UNORDERED;
 
-        uint8_t privateKey[KeyBytes];
-        memset( privateKey, 0, sizeof( privateKey ) );
+        uint8_t privateKey[ServerSecretKeyBytes];
+        ExampleServerKey( privateKey );
         double time = 100.0;
 
         Server server( GetDefaultAllocator(), privateKey, serverAddress, config, serverAdapter, time );
         server.Start( 1 );
         Client client( GetDefaultAllocator(), clientAddress, config, clientAdapter, time );
-        client.InsecureConnect( privateKey, 1, serverAddress );
+        client.Connect( &serverAddress, 1, NULL, NULL, NULL );
 
         for ( int i = 0; i < 256 && !client.IsConnected(); ++i )
         {
@@ -255,14 +255,14 @@ int main()
         config.channel[0].type = CHANNEL_TYPE_RELIABLE_ORDERED;
         config.channel[1].type = CHANNEL_TYPE_UNRELIABLE_UNORDERED;
 
-        uint8_t privateKey[KeyBytes];
-        memset( privateKey, 0, sizeof( privateKey ) );
+        uint8_t privateKey[ServerSecretKeyBytes];
+        ExampleServerKey( privateKey );
         double time = 100.0;
 
         Server server( GetDefaultAllocator(), privateKey, serverAddress, config, serverAdapter, time );
         server.Start( 1 );
         Client client( GetDefaultAllocator(), clientAddress, config, clientAdapter, time );
-        client.InsecureConnect( privateKey, 1, serverAddress );
+        client.Connect( &serverAddress, 1, NULL, NULL, NULL );
 
         for ( int i = 0; i < 256 && !client.IsConnected(); ++i )
         {

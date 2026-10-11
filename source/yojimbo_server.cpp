@@ -36,8 +36,10 @@ namespace yojimbo
         : BaseServer( allocator, config, adapter, time )
     {
         yojimbo_assert( KeyBytes == NETCODE_KEY_BYTES );
-        yojimbo_assert( DefaultMaxConnectTokenLifetime == NETCODE_DEFAULT_MAX_CONNECT_TOKEN_LIFETIME );
-        memcpy( m_privateKey, privateKey, NETCODE_KEY_BYTES );
+        yojimbo_assert( ServerSecretKeyBytes == NETCODE_SECRET_KEY_BYTES );
+        yojimbo_assert( ServerPublicKeyBytes == NETCODE_PUBLIC_KEY_BYTES );
+        yojimbo_assert( UserDataBytes == NETCODE_USER_DATA_BYTES );
+        memcpy( m_privateKey, privateKey, NETCODE_SECRET_KEY_BYTES );
         m_address = address;
         m_boundAddress = address;
         m_config = config;
@@ -65,11 +67,13 @@ namespace yojimbo
         struct netcode_server_config_t netcodeConfig;
         netcode_default_server_config(&netcodeConfig);
         netcodeConfig.protocol_id = m_config.protocolId;
-        memcpy(netcodeConfig.private_key, m_privateKey, NETCODE_KEY_BYTES);
+        memcpy(netcodeConfig.private_key, m_privateKey, NETCODE_SECRET_KEY_BYTES);
         netcodeConfig.allocator_context = &GetGlobalAllocator();
         netcodeConfig.allocate_function = StaticAllocateFunction;
         netcodeConfig.free_function     = StaticFreeFunction;
-        netcodeConfig.max_connect_token_lifetime = m_config.maxConnectTokenLifetime;
+        netcodeConfig.timeout_seconds = m_config.timeout;
+        netcodeConfig.handshakes_per_second_per_address = m_config.handshakesPerSecondPerAddress;
+        netcodeConfig.handshake_burst_per_address = m_config.handshakeBurstPerAddress;
         netcodeConfig.callback_context = this;
         netcodeConfig.connect_disconnect_callback = StaticConnectDisconnectCallbackFunction;
         netcodeConfig.send_loopback_packet_callback = StaticSendLoopbackPacketCallbackFunction;
@@ -246,6 +250,21 @@ namespace yojimbo
     uint64_t Server::GetClientId( int clientIndex ) const
     {
         return netcode_server_client_id( m_server, clientIndex );
+    }
+
+    const uint8_t * Server::GetClientBinding( int clientIndex ) const
+    {
+        return m_server ? netcode_server_client_binding( m_server, clientIndex ) : NULL;
+    }
+
+    const uint8_t * Server::GetClientSessionSignature( int clientIndex ) const
+    {
+        return m_server ? netcode_server_client_session_signature( m_server, clientIndex ) : NULL;
+    }
+
+    const uint8_t * Server::GetPublicKey() const
+    {
+        return m_server ? netcode_server_public_key( m_server ) : NULL;
     }
 
     const uint8_t * Server::GetClientUserData( int clientIndex ) const

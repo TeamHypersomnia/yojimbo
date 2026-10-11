@@ -180,4 +180,17 @@ public:
 
 static TestAdapter adapter;
 
+// A server needs a valid Ed25519 key pair. The examples and tests always use the same one.
+
+#include <sodium.h>
+
+inline void ExampleServerKey( uint8_t * secretKey )
+{
+    uint8_t seed[32];
+    uint8_t publicKey[yojimbo::ServerPublicKeyBytes];
+    for ( int i = 0; i < 32; ++i )
+        seed[i] = (uint8_t) ( i * 7 + 1 );
+    crypto_sign_seed_keypair( publicKey, secretKey, seed );
+}
+
 #endif // #ifndef SHARED_H

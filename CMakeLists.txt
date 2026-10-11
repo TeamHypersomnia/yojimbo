@@ -28,8 +28,9 @@ endif()
 
 project(Yojimbo VERSION 1.13.5 LANGUAGES C CXX)
 
+# Hypersomnia: the handshake needs Ed25519, X25519, sealed boxes and BLAKE2b, which the bundled subset lacks.
 option(YOJIMBO_SYSTEM_SODIUM
-    "Link the system-installed libsodium instead of the bundled subset in sodium/" OFF)
+    "Link the system-installed libsodium instead of the bundled subset in sodium/" ON)
 
 option(YOJIMBO_SYSTEM_DEPS
     "Build against system-installed serialize, reliable and netcode instead of the vendored copies" OFF)
@@ -187,12 +188,19 @@ else()
     set(YOJIMBO_INCLUDE_DIRS
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/sodium"
         "${YOJIMBO_TLSF_INCLUDE_DIRS}"
         "${CMAKE_CURRENT_SOURCE_DIR}/netcode"
         "${CMAKE_CURRENT_SOURCE_DIR}/reliable"
         "${CMAKE_CURRENT_SOURCE_DIR}/serialize"
     )
+
+    # the bundled subset's sodium.h would shadow the system one
+    if(NOT YOJIMBO_SYSTEM_SODIUM)
+        list(APPEND YOJIMBO_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/sodium")
+    else()
+        find_path(YOJIMBO_SODIUM_INCLUDE_DIR NAMES sodium.h REQUIRED HINTS /opt/homebrew/include /usr/local/include /usr/include)
+        list(APPEND YOJIMBO_INCLUDE_DIRS "${YOJIMBO_SODIUM_INCLUDE_DIR}")
+    endif()
 
     # --- libsodium backend ----------------------------------------------------------------
 

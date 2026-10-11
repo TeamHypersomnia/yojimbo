@@ -3746,7 +3746,7 @@ struct netcode_address_t * netcode_client_server_address( struct netcode_client_
 
 #define NETCODE_MAX_ENCRYPTION_MAPPINGS ( NETCODE_MAX_CLIENTS * 4 )
 
-#define NETCODE_PENDING_HANDSHAKE_SECONDS 30
+#define NETCODE_PENDING_HANDSHAKE_SECONDS 10
 
 struct netcode_encryption_manager_t
 {
@@ -4758,6 +4758,22 @@ void netcode_server_process_connection_request_packet( struct netcode_server_t *
                                                                                current_timestamp, 
                                                                                server->time,
                                                                                insecure_connect_token );
+
+    // an evicted insecure entry may still be referenced by the mapping of a handshake from another address.
+    // completing that handshake would mark this new connect token as consumed and refuse its retransmissions.
+
+    if ( connect_token_entry_index >= 0 )
+    {
+        int mapping_index;
+        for ( mapping_index = 0; mapping_index < server->encryption_manager.num_encryption_mappings; mapping_index++ )
+        {
+            if ( server->encryption_manager.connect_token_entry_index[mapping_index] == connect_token_entry_index && 
+                 !netcode_address_equal( &server->encryption_manager.address[mapping_index], from ) )
+            {
+                server->encryption_manager.connect_token_entry_index[mapping_index] = -1;
+            }
+        }
+    }
 
     if ( connect_token_entry_index == NETCODE_CONNECT_TOKEN_HISTORY_FULL )
     {

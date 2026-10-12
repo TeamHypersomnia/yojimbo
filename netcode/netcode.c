@@ -2664,22 +2664,15 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
     if ( client->has_server_public_key && sodium_memcmp( server_public_key, client->server_public_key, NETCODE_PUBLIC_KEY_BYTES ) != 0 )
     {
         /*
-            Joined by address (no key pinned), the first challenge's key is taken - a forged one with another key
-            could be first. When the taken key has led nowhere for a second, a challenge with another key starts over with it.
+            Joined by address (no key pinned - see the pinned case above), a challenge with another key starts over with it:
+            a forged first challenge is then corrected by the real server's next one. A fresh secret for every key -
+            one sealed to someone else's key must never reach the real server. A "full" answer is no reason to switch.
         */
-
-        if ( client->has_expected_server_public_key || client->time - client->last_packet_receive_time < 1.0 )
-        {
-            netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client ignored challenge packet. the server public key changed during the handshake\n" );
-            return;
-        }
-
-        // a "full" answer is no reason to give up the taken key
 
         if ( flags & NETCODE_CHALLENGE_FLAG_SERVER_FULL )
             return;
 
-        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client took another server public key - the previous one led nowhere\n" );
+        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client took another server public key\n" );
         client->has_server_public_key = 0;
     }
 
@@ -2710,15 +2703,15 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
 
     if ( !netcode_client_prepare_response( client, cookie ) )
     {
-        netcode_printf( NETCODE_LOG_LEVEL_ERROR, "error: client failed to seal the connection response\n" );
-        client->should_disconnect = 1;
-        client->should_disconnect_state = NETCODE_CLIENT_STATE_CONNECTION_DENIED;
+        // e.g. a forged key that is no valid point - ignored, a real challenge may still come
+
+        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client ignored challenge packet. could not seal the response to its key\n" );
+        client->has_server_public_key = 0;
         return;
     }
 
     netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client received connection challenge packet from server\n" );
 
-    client->server_full_since = -1.0;
     client->last_packet_receive_time = client->time;
 
     if ( client->state != NETCODE_CLIENT_STATE_SENDING_CONNECTION_RESPONSE )

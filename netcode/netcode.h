@@ -114,9 +114,7 @@
 #define NETCODE_SIGNATURE_BYTES 64
 #define NETCODE_BINDING_BYTES 32
 #define NETCODE_DEFAULT_CONNECT_TIMEOUT_SECONDS 5
-#define NETCODE_DEFAULT_HANDSHAKES_PER_SECOND_PER_ADDRESS 20.0
-#define NETCODE_DEFAULT_HANDSHAKE_BURST_PER_ADDRESS 40.0
-#define NETCODE_DEFAULT_HANDSHAKES_PER_SECOND_GLOBAL 400.0
+#define NETCODE_DEFAULT_HANDSHAKES_PER_SECOND 100.0
 
 #define NETCODE_CLIENT_STATE_SERVER_KEY_MISMATCH                -8
 #define NETCODE_CLIENT_STATE_VERSION_MISMATCH                   -7
@@ -353,9 +351,9 @@ struct netcode_server_config_t
 	int disable_disconnect_packets;
 
     int timeout_seconds;
-    double handshakes_per_second_per_address;
-    double handshake_burst_per_address;
-    double handshakes_per_second_global;
+    double handshakes_per_second;
+    int (*allow_handshake_callback)(void*,NETCODE_CONST struct netcode_address_t*);
+    void * allow_handshake_context;
 };
 
 /*
@@ -363,11 +361,10 @@ struct netcode_server_config_t
 
     timeout_seconds: the silence after which a connected client is dropped (zero or less disables it).
 
-    Opening a sealed box costs an X25519 (with the Ed25519 checks the application does, ~0.2 ms), so each
-    address gets handshakes_per_second_per_address of them, with bursts up to handshake_burst_per_address.
-    The counters live in a fixed table hashed by address (IPv6 by its /64): it never grows or fills,
-    collisions only share a limit. All addresses together get handshakes_per_second_global (zero or less: no global limit),
-    so that no flood lags the server - it refuses handshakes instead. Loopback addresses are not limited.
+    Opening a sealed box costs an X25519 (with the Ed25519 checks the application does, ~0.2 ms), so the server opens
+    at most handshakes_per_second of them for all addresses together (bursts of twice that; zero or less: no cap) -
+    a flood gets handshakes refused instead of lagging the server. Rules per address are the application's:
+    allow_handshake_callback (or NULL), called before the X25519, returns zero to refuse.
 */
 
 void netcode_default_server_config( struct netcode_server_config_t * config );

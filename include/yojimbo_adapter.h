@@ -93,6 +93,18 @@ namespace yojimbo
         }
 
         /**
+            Called by the server before it opens a client's handshake (an X25519): return false to refuse it,
+            e.g. for an address that handshakes too often. The server also caps all handshakes together
+            (netcode's handshakes_per_second). The default lets everyone in.
+         */
+
+        virtual bool AllowHandshake( const Address & from )
+        {
+            (void) from;
+            return true;
+        }
+
+        /**
             Send one complete netcode.io datagram through the custom transport.
             Called only when UseCustomPacketIO returns true. packetBytes is never larger than
             MaxAdapterPacketBytes, so buffers sized to that constant always fit the datagram.

@@ -168,6 +168,8 @@ namespace yojimbo
 
         static void StaticConnectDisconnectCallbackFunction( void * context, int clientIndex, int connected );
 
+        static int StaticAllowHandshakeCallback( void * context, const netcode_address_t * from );
+
         static void StaticSendLoopbackPacketCallbackFunction( void * context, int clientIndex, const uint8_t * packetData, int packetBytes, uint64_t packetSequence );
 
         static void StaticSendPacketOverride( void * context, netcode_address_t * to, const uint8_t * packetData, int packetBytes );

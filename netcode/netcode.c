@@ -1131,7 +1131,6 @@ int netcode_decrypt_aead( uint8_t * message, uint64_t message_length,
 #define NETCODE_RESPONSE_PLAINTEXT_BYTES        ( NETCODE_COOKIE_BYTES + NETCODE_CONNECTION_SECRET_BYTES + NETCODE_SIGNATURE_BYTES + NETCODE_USER_DATA_BYTES )
 #define NETCODE_HANDSHAKE_RESPONSE_BYTES        ( 1 + NETCODE_COOKIE_BYTES + crypto_box_SEALBYTES + NETCODE_RESPONSE_PLAINTEXT_BYTES )
 
-#define NETCODE_HANDSHAKE_RATE_BUCKETS          4096
 #define NETCODE_USED_COOKIES                    1024
 
 typedef char netcode_challenge_fits_in_request[ ( NETCODE_HANDSHAKE_CHALLENGE_BYTES <= NETCODE_HANDSHAKE_REQUEST_BYTES ) ? 1 : -1 ];
@@ -3560,9 +3559,9 @@ void netcode_default_server_config( struct netcode_server_config_t * config )
     config->auxiliary_command_context = NULL;
     config->disable_disconnect_packets = 0;
     config->timeout_seconds = NETCODE_DEFAULT_CONNECT_TIMEOUT_SECONDS;
-    config->handshakes_per_second_per_address = NETCODE_DEFAULT_HANDSHAKES_PER_SECOND_PER_ADDRESS;
-    config->handshake_burst_per_address = NETCODE_DEFAULT_HANDSHAKE_BURST_PER_ADDRESS;
-    config->handshakes_per_second_global = NETCODE_DEFAULT_HANDSHAKES_PER_SECOND_GLOBAL;
+    config->handshakes_per_second = NETCODE_DEFAULT_HANDSHAKES_PER_SECOND;
+    config->allow_handshake_callback = NULL;
+    config->allow_handshake_context = NULL;
 }
 
 struct netcode_server_t
@@ -3581,11 +3580,8 @@ struct netcode_server_t
     uint8_t x25519_public_key[crypto_box_PUBLICKEYBYTES];
     uint8_t x25519_secret_key[crypto_box_SECRETKEYBYTES];
     uint8_t cookie_key[NETCODE_KEY_BYTES];
-    uint8_t rate_key[crypto_shorthash_KEYBYTES];
-    double rate_last_time[NETCODE_HANDSHAKE_RATE_BUCKETS];
-    double rate_tokens[NETCODE_HANDSHAKE_RATE_BUCKETS];
-    double global_rate_last_time;
-    double global_rate_tokens;
+    double handshake_rate_last_time;
+    double handshake_rate_tokens;
     uint8_t used_cookies[NETCODE_USED_COOKIES][NETCODE_MAC_BYTES];
     int used_cookie_next;
     double rate_limit_last_logged;
@@ -3860,21 +3856,11 @@ void netcode_server_start( struct netcode_server_t * server, int max_clients )
     // a new cookie key: the cookies of a previous run do not get anywhere
 
     netcode_generate_key( server->cookie_key );
-    netcode_random_bytes( server->rate_key, crypto_shorthash_KEYBYTES );
     memset( server->used_cookies, 0, sizeof( server->used_cookies ) );
     server->used_cookie_next = 0;
 
-    {
-        int bucket;
-        for ( bucket = 0; bucket < NETCODE_HANDSHAKE_RATE_BUCKETS; bucket++ )
-        {
-            server->rate_last_time[bucket] = server->time;
-            server->rate_tokens[bucket] = server->config.handshake_burst_per_address;
-        }
-
-        server->global_rate_last_time = server->time;
-        server->global_rate_tokens = 2.0 * server->config.handshakes_per_second_global;
-    }
+    server->handshake_rate_last_time = server->time;
+    server->handshake_rate_tokens = 2.0 * server->config.handshakes_per_second;
 
     server->global_sequence = 1ULL << 63;
 
@@ -4282,37 +4268,6 @@ static void netcode_server_process_handshake_request( struct netcode_server_t * 
     netcode_server_send_challenge( server, from );
 }
 
-static int netcode_is_unlimited_address( NETCODE_CONST struct netcode_address_t * address )
-{
-    if ( address->type == NETCODE_ADDRESS_IPV4 )
-    {
-        // 127.255.255.255 is where the game puts its WebRTC peers: remote players, each on its own port
-
-        const int webrtc_peer = address->data.ipv4[0] == 127 && address->data.ipv4[1] == 255 && address->data.ipv4[2] == 255 && address->data.ipv4[3] == 255;
-        return address->data.ipv4[0] == 127 && !webrtc_peer;
-    }
-
-    if ( address->type == NETCODE_ADDRESS_IPV6 )
-    {
-        int i;
-        for ( i = 0; i < 7; i++ )
-        {
-            if ( address->data.ipv6[i] != 0 )
-                return 0;
-        }
-
-        return address->data.ipv6[7] == 1;
-    }
-
-    return 0;
-}
-
-/*
-    One handshake (an X25519 and what the application verifies after it) per call that returns 1.
-    The table has a fixed size and is never cleaned: a bucket just refills with time, and an address
-    that collides with another only shares its limit.
-*/
-
 static int netcode_take_token( double * last_time, double * tokens_left, double now, double rate, double burst )
 {
     double elapsed = now - *last_time;
@@ -4324,7 +4279,6 @@ static int netcode_take_token( double * last_time, double * tokens_left, double 
 
     if ( tokens > burst )
         tokens = burst;
-
 
     *last_time = now;
 
@@ -4338,65 +4292,21 @@ static int netcode_take_token( double * last_time, double * tokens_left, double 
     return 1;
 }
 
-static uint64_t netcode_server_rate_bucket( struct netcode_server_t * server, NETCODE_CONST uint8_t * data, int bytes )
-{
-    uint8_t hash[crypto_shorthash_BYTES];
-    crypto_shorthash( hash, data, (unsigned long long) bytes, server->rate_key );
-
-    uint8_t * h = hash;
-    return netcode_read_uint64( &h ) % NETCODE_HANDSHAKE_RATE_BUCKETS;
-}
+/*
+    One handshake (an X25519 and what the application verifies after it) per call that returns 1:
+    first the application's own rule for the address (allow_handshake_callback), then the cap for all addresses together.
+*/
 
 static int netcode_server_take_handshake( struct netcode_server_t * server, NETCODE_CONST struct netcode_address_t * address )
 {
-    if ( netcode_is_unlimited_address( address ) || server->config.handshakes_per_second_per_address <= 0.0 )
-        return 1;
-
-    const double rate = server->config.handshakes_per_second_per_address;
-    const double burst = server->config.handshake_burst_per_address;
-
-    uint8_t data[32];
-    int bytes = 0;
-
-    if ( address->type == NETCODE_ADDRESS_IPV4 )
-    {
-        memcpy( data, address->data.ipv4, 4 );
-        bytes = 4;
-
-        if ( address->data.ipv4[0] == 127 )
-        {
-            uint8_t * p = data + 4;
-            netcode_write_uint16( &p, address->port );
-            bytes += 2;
-        }
-    }
-    else
-    {
-        // an IPv6 host usually has a whole /64 to rotate through
-
-        uint8_t * p = data;
-        int i;
-        for ( i = 0; i < 4; i++ )
-        {
-            netcode_write_uint16( &p, address->data.ipv6[i] );
-        }
-        bytes = 8;
-    }
-
-    const uint64_t index = netcode_server_rate_bucket( server, data, bytes );
-
-    if ( !netcode_take_token( &server->rate_last_time[index], &server->rate_tokens[index], server->time, rate, burst ) )
+    if ( server->config.allow_handshake_callback && !server->config.allow_handshake_callback( server->config.allow_handshake_context, address ) )
         return 0;
 
-    /*
-        A cap on the work for all addresses together, so that no flood lags the server - it refuses handshakes instead.
-    */
-
-    if ( server->config.handshakes_per_second_global > 0.0 )
+    if ( server->config.handshakes_per_second > 0.0 )
     {
-        const double global = server->config.handshakes_per_second_global;
+        const double rate = server->config.handshakes_per_second;
 
-        if ( !netcode_take_token( &server->global_rate_last_time, &server->global_rate_tokens, server->time, global, 2.0 * global ) )
+        if ( !netcode_take_token( &server->handshake_rate_last_time, &server->handshake_rate_tokens, server->time, rate, 2.0 * rate ) )
             return 0;
     }
 
@@ -9796,29 +9706,12 @@ void test_handshake_version_mismatch()
     test_wire_destroy();
 }
 
-void test_handshake_rate_limit_global()
+static int test_allow_handshake_refused_port = 0;
+
+static int test_allow_handshake( void * context, NETCODE_CONST struct netcode_address_t * address )
 {
-    test_wire_create( 0 );
-
-    struct netcode_server_t * server = test_wire.server;
-
-    server->config.handshakes_per_second_per_address = 1.0;
-    server->config.handshake_burst_per_address = 10.0;
-    server->config.handshakes_per_second_global = 1.0;
-    server->global_rate_tokens = 2.0;
-    server->global_rate_last_time = server->time;
-
-    // all addresses together: two, then none
-
-    struct netcode_address_t c, d, e;
-    check( netcode_parse_address( "10.1.0.1:1000", &c ) == NETCODE_OK );
-    check( netcode_parse_address( "10.1.0.2:1000", &d ) == NETCODE_OK );
-    check( netcode_parse_address( "10.1.0.3:1000", &e ) == NETCODE_OK );
-    check( netcode_server_take_handshake( server, &c ) );
-    check( netcode_server_take_handshake( server, &d ) );
-    check( !netcode_server_take_handshake( server, &e ) );
-
-    test_wire_destroy();
+    (void) context;
+    return address->port != test_allow_handshake_refused_port;
 }
 
 void test_handshake_rate_limit()
@@ -9827,65 +9720,32 @@ void test_handshake_rate_limit()
 
     struct netcode_server_t * server = test_wire.server;
 
-    server->config.handshakes_per_second_per_address = 1.0;
-    server->config.handshake_burst_per_address = 2.0;
+    // the application's rule decides for each address
 
-    int bucket;
-    for ( bucket = 0; bucket < NETCODE_HANDSHAKE_RATE_BUCKETS; bucket++ )
-    {
-        server->rate_tokens[bucket] = 2.0;
-        server->rate_last_time[bucket] = server->time;
-    }
+    test_allow_handshake_refused_port = 2000;
+    server->config.allow_handshake_callback = test_allow_handshake;
 
-    struct netcode_address_t a, a_other_port, b, ipv6_a, ipv6_same_64, webrtc_1, webrtc_2, loopback;
+    struct netcode_address_t a, refused, c;
     check( netcode_parse_address( "10.0.0.1:1000", &a ) == NETCODE_OK );
-    check( netcode_parse_address( "10.0.0.1:2000", &a_other_port ) == NETCODE_OK );
-    check( netcode_parse_address( "10.0.0.2:1000", &b ) == NETCODE_OK );
-    check( netcode_parse_address( "[2001:db8:1:2::1]:1000", &ipv6_a ) == NETCODE_OK );
-    check( netcode_parse_address( "[2001:db8:1:2:ffff::9]:3000", &ipv6_same_64 ) == NETCODE_OK );
-    check( netcode_parse_address( "127.255.255.255:1", &webrtc_1 ) == NETCODE_OK );
-    check( netcode_parse_address( "127.255.255.255:2", &webrtc_2 ) == NETCODE_OK );
-    check( netcode_parse_address( "127.0.0.1:5000", &loopback ) == NETCODE_OK );
-
-    // a burst, then nothing: another port of the same host shares the limit
+    check( netcode_parse_address( "10.0.0.1:2000", &refused ) == NETCODE_OK );
+    check( netcode_parse_address( "10.0.0.3:1000", &c ) == NETCODE_OK );
 
     check( netcode_server_take_handshake( server, &a ) );
-    check( netcode_server_take_handshake( server, &a_other_port ) );
+    check( !netcode_server_take_handshake( server, &refused ) );
+
+    // all addresses together: a burst of twice the rate, then nothing until it refills
+
+    server->config.allow_handshake_callback = NULL;
+    server->config.handshakes_per_second = 1.0;
+    server->handshake_rate_tokens = 2.0;
+    server->handshake_rate_last_time = server->time;
+
+    check( netcode_server_take_handshake( server, &a ) );
+    check( netcode_server_take_handshake( server, &c ) );
     check( !netcode_server_take_handshake( server, &a ) );
-
-    // other hosts are not affected
-
-    check( netcode_server_take_handshake( server, &b ) );
-
-    // an IPv6 /64 is one host
-
-    check( netcode_server_take_handshake( server, &ipv6_a ) );
-    check( netcode_server_take_handshake( server, &ipv6_same_64 ) );
-    check( !netcode_server_take_handshake( server, &ipv6_a ) );
-
-    // each WebRTC peer has its own limit, and loopback has none
-
-    check( netcode_server_take_handshake( server, &webrtc_1 ) );
-    check( netcode_server_take_handshake( server, &webrtc_1 ) );
-    check( !netcode_server_take_handshake( server, &webrtc_1 ) );
-    check( netcode_server_take_handshake( server, &webrtc_2 ) );
-
-    int i;
-    for ( i = 0; i < 1000; i++ )
-    {
-        check( netcode_server_take_handshake( server, &loopback ) );
-    }
-
-    // the limit refills with time, by itself
 
     server->time += 1.0;
-    check( netcode_server_take_handshake( server, &a ) );
-    check( !netcode_server_take_handshake( server, &a ) );
-
-    server->time += 100.0;
-    check( netcode_server_take_handshake( server, &a ) );
-    check( netcode_server_take_handshake( server, &a ) );
-    check( !netcode_server_take_handshake( server, &a ) );
+    check( netcode_server_take_handshake( server, &c ) );
 
     test_wire_destroy();
 }
@@ -10025,7 +9885,6 @@ void netcode_test()
         RUN_TEST( test_handshake_forged_challenge_other_key );
         RUN_TEST( test_handshake_version_mismatch );
         RUN_TEST( test_handshake_rate_limit );
-        RUN_TEST( test_handshake_rate_limit_global );
         RUN_TEST( test_handshake_nothing_accumulates );
 #if NETCODE_PACKET_TAGGING
         RUN_TEST( test_packet_tagging );

@@ -72,8 +72,8 @@ namespace yojimbo
         netcodeConfig.allocate_function = StaticAllocateFunction;
         netcodeConfig.free_function     = StaticFreeFunction;
         netcodeConfig.timeout_seconds = m_config.timeout;
-        netcodeConfig.handshakes_per_second_per_address = m_config.handshakesPerSecondPerAddress;
-        netcodeConfig.handshake_burst_per_address = m_config.handshakeBurstPerAddress;
+        netcodeConfig.allow_handshake_callback = StaticAllowHandshakeCallback;
+        netcodeConfig.allow_handshake_context = this;
         netcodeConfig.callback_context = this;
         netcodeConfig.connect_disconnect_callback = StaticConnectDisconnectCallbackFunction;
         netcodeConfig.send_loopback_packet_callback = StaticSendLoopbackPacketCallbackFunction;
@@ -378,6 +378,13 @@ namespace yojimbo
     {
         Server * server = (Server*) context;
         server->SendLoopbackPacketCallbackFunction( clientIndex, packetData, packetBytes, packetSequence );
+    }
+
+    int Server::StaticAllowHandshakeCallback( void * context, const netcode_address_t * from )
+    {
+        Server * server = (Server*) context;
+        const Address address = AddressFromNetcode( *from );
+        return address.IsValid() && server->GetAdapter().AllowHandshake( address ) ? 1 : 0;
     }
 
     void Server::StaticSendPacketOverride( void * context, netcode_address_t * to, const uint8_t * packetData, int packetBytes )

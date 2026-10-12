@@ -4381,7 +4381,7 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
 
     if ( !netcode_server_take_handshake( server, from ) )
     {
-        netcode_server_log_refusal( server, &server->rate_limit_last_logged, "an address exceeded its handshakes per second" );
+        netcode_server_log_refusal( server, &server->rate_limit_last_logged, "a handshake was refused (the application's limit for its address, or too many handshakes for all)" );
         return;
     }
 

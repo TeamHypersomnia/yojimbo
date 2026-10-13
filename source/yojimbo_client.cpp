@@ -80,6 +80,11 @@ namespace yojimbo
         return m_client ? netcode_client_server_public_key( m_client ) : NULL;
     }
 
+    int Client::GetServerAddressIndex() const
+    {
+        return m_client ? netcode_client_server_address_index( m_client ) : 0;
+    }
+
     void Client::Disconnect()
     {
         // Stop-in-progress guard: netcode_client_destroy (inside DestroyClient below) sends

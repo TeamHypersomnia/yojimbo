@@ -285,6 +285,12 @@ void netcode_client_connect( struct netcode_client_t * client,
 
 NETCODE_CONST uint8_t * netcode_client_server_public_key( struct netcode_client_t * client );
 
+/*
+    Which of the addresses given to connect the client is on (0 - the first).
+*/
+
+int netcode_client_server_address_index( struct netcode_client_t * client );
+
 void netcode_client_update( struct netcode_client_t * client, double time );
 
 uint64_t netcode_client_next_packet_sequence( struct netcode_client_t * client );

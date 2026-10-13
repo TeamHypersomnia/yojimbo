@@ -131,6 +131,10 @@ namespace yojimbo
 
         const uint8_t * GetServerPublicKey() const;
 
+        /// Which of the addresses given to Connect the client is on (0 - the first).
+
+        int GetServerAddressIndex() const;
+
         void Disconnect() YOJIMBO_OVERRIDE;
 
         void SendPackets() YOJIMBO_OVERRIDE;

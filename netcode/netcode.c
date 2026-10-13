@@ -2584,6 +2584,12 @@ NETCODE_CONST uint8_t * netcode_client_server_public_key( struct netcode_client_
     return client->has_server_public_key ? client->server_public_key : NULL;
 }
 
+int netcode_client_server_address_index( struct netcode_client_t * client )
+{
+    netcode_assert( client );
+    return client->server_address_index;
+}
+
 /*
     Seals the response to a challenge. A later challenge - the server found the cookie stale - is answered
     with the same connection secret under the new cookie.

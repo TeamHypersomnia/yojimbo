@@ -2277,12 +2277,21 @@ int netcode_client_socket_create( struct netcode_socket_t * socket,
     return 1;
 }
 
-static void netcode_client_clear_attempt( struct netcode_client_t * client )
+/*
+    Why the attempts failed - kept over all the addresses of one connect (e.g. a remote address and then 127.0.0.1),
+    so the reason a remote server gave is not lost to the next address. Cleared only when a new connect starts.
+*/
+
+static void netcode_client_clear_failure_hints( struct netcode_client_t * client )
 {
-    client->has_server_public_key = 0;
     client->saw_server_key_mismatch = 0;
     client->saw_version_mismatch = 0;
     client->server_full_since = -1.0;
+}
+
+static void netcode_client_clear_attempt( struct netcode_client_t * client )
+{
+    client->has_server_public_key = 0;
     memset( client->server_public_key, 0, NETCODE_PUBLIC_KEY_BYTES );
     sodium_memzero( client->connection_secret, NETCODE_CONNECTION_SECRET_BYTES );
     memset( client->cookie, 0, NETCODE_COOKIE_BYTES );
@@ -2406,6 +2415,7 @@ struct netcode_client_t * netcode_client_create_dual( NETCODE_CONST char * addre
     client->server_address_index = 0;
     client->loopback = 0;
     netcode_client_clear_attempt( client );
+    netcode_client_clear_failure_hints( client );
 
     netcode_packet_queue_init( &client->packet_receive_queue, config->allocator_context, config->allocate_function, config->free_function );
 
@@ -2563,6 +2573,7 @@ void netcode_client_connect( struct netcode_client_t * client,
     netcode_client_log_connecting( client );
 
     netcode_client_reset_before_next_connect( client );
+    netcode_client_clear_failure_hints( client );
 
     netcode_client_set_state( client, NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST );
 }

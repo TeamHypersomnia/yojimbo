@@ -2674,7 +2674,17 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
     if ( client->has_expected_server_public_key && sodium_memcmp( server_public_key, client->expected_server_public_key, NETCODE_PUBLIC_KEY_BYTES ) != 0 )
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client ignored challenge packet. unexpected server public key\n" );
-        client->saw_server_key_mismatch = 1;
+
+        /*
+            Not on a fallback address (e.g. the same port on localhost): another server there is not the one
+            being joined pretending to be it - it is just not that server.
+        */
+
+        if ( client->server_address_index == 0 )
+        {
+            client->saw_server_key_mismatch = 1;
+        }
+
         return;
     }
 

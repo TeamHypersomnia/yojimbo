@@ -2226,6 +2226,7 @@ struct netcode_client_t
     uint8_t cookie[NETCODE_COOKIE_BYTES];
     uint8_t response_packet[NETCODE_HANDSHAKE_RESPONSE_BYTES];
     int saw_server_key_mismatch;
+    double server_key_mismatch_since;
     int saw_version_mismatch;
     double server_full_since;
 
@@ -2285,6 +2286,7 @@ int netcode_client_socket_create( struct netcode_socket_t * socket,
 static void netcode_client_clear_failure_hints( struct netcode_client_t * client )
 {
     client->saw_server_key_mismatch = 0;
+    client->server_key_mismatch_since = -1.0;
     client->saw_version_mismatch = 0;
     client->server_full_since = -1.0;
 }
@@ -2683,6 +2685,9 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
         if ( client->server_address_index == 0 )
         {
             client->saw_server_key_mismatch = 1;
+
+            if ( client->server_key_mismatch_since < 0.0 )
+                client->server_key_mismatch_since = client->time;
         }
 
         return;
@@ -3102,7 +3107,19 @@ void netcode_client_update( struct netcode_client_t * client, double time )
         const int full_for_long = client->server_full_since >= 0.0 && client->server_full_since + 1.0 <= time;
         const int attempt_timed_out = client->connect_start_time + client->config.connect_timeout_seconds <= time;
 
-        if ( full_for_long || attempt_timed_out )
+        /*
+            Only challenges with another key for a while, none with the expected one: the server there has another key -
+            no point waiting out the whole timeout. A forged one can not end it early: the real server's challenge
+            comes within the round trip and moves on to the response. The first address only - a fallback
+            (e.g. 127.0.0.1) gets its whole attempt.
+        */
+
+        const int other_key_for_long = 
+            client->server_address_index == 0 &&
+            client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST &&
+            client->server_key_mismatch_since >= 0.0 && client->server_key_mismatch_since + 1.5 <= time;
+
+        if ( full_for_long || attempt_timed_out || other_key_for_long )
         {
             const int timed_out_state = client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST ? 
                 NETCODE_CLIENT_STATE_CONNECTION_REQUEST_TIMED_OUT : 
@@ -3113,7 +3130,12 @@ void netcode_client_update( struct netcode_client_t * client, double time )
 
             netcode_printf( NETCODE_LOG_LEVEL_INFO, "client connect failed: %s\n", netcode_client_state_name( failed_state ) );
 
-            if ( netcode_client_connect_to_next_server( client ) )
+            /*
+                A server answered there with another key: it is up, just not the one expected - no fallback
+                (e.g. 127.0.0.1, for one's own server behind the same router) is it either.
+            */
+
+            if ( !other_key_for_long && netcode_client_connect_to_next_server( client ) )
                 return;
 
             netcode_client_disconnect_internal( client, failed_state, 0 );

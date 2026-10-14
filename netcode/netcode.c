@@ -3108,16 +3108,16 @@ void netcode_client_update( struct netcode_client_t * client, double time )
         const int attempt_timed_out = client->connect_start_time + client->config.connect_timeout_seconds <= time;
 
         /*
-            Only challenges with another key for a while, none with the expected one: the server there has another key -
-            no point waiting out the whole timeout. A forged one can not end it early: the real server's challenge
-            comes within the round trip and moves on to the response. The first address only - a fallback
-            (e.g. 127.0.0.1) gets its whole attempt.
+            Challenges with another key and none with the expected one for 3 s of the attempt: the server there has
+            another key - no point waiting out the whole timeout. A forged challenge can end an attempt early only if
+            the real server has not answered in those 3 s either (it answers within the round trip). The first
+            address only - a fallback (e.g. 127.0.0.1) gets its whole attempt.
         */
 
         const int other_key_for_long = 
             client->server_address_index == 0 &&
             client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST &&
-            client->server_key_mismatch_since >= 0.0 && client->server_key_mismatch_since + 1.5 <= time;
+            client->server_key_mismatch_since >= 0.0 && client->connect_start_time + 3.0 <= time;
 
         if ( full_for_long || attempt_timed_out || other_key_for_long )
         {
@@ -4359,11 +4359,21 @@ static int netcode_server_take_handshake( struct netcode_server_t * server, NETC
     return 1;
 }
 
-static int netcode_server_cookie_used( struct netcode_server_t * server, NETCODE_CONST uint8_t * mac )
+/*
+    Newest first, and only back to when the cookie was issued - it can not have been used before. A flood of
+    responses with one valid cookie costs a scan of the handshakes since then, not of the whole ring.
+*/
+
+static int netcode_server_cookie_used( struct netcode_server_t * server, NETCODE_CONST uint8_t * mac, double issued_at )
 {
-    int i;
-    for ( i = 0; i < NETCODE_USED_COOKIES; i++ )
+    int n;
+    for ( n = 0; n < NETCODE_USED_COOKIES; n++ )
     {
+        const int i = ( server->used_cookie_next - 1 - n + 2 * NETCODE_USED_COOKIES ) % NETCODE_USED_COOKIES;
+
+        if ( server->used_cookie_times[i] < issued_at )
+            break;
+
         if ( memcmp( server->used_cookies[i], mac, NETCODE_MAC_BYTES ) == 0 )
             return 1;
     }
@@ -4413,7 +4423,7 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
         return;
     }
 
-    if ( netcode_server_cookie_used( server, mac ) )
+    if ( netcode_server_cookie_used( server, mac, (double) timestamp / 1000.0 ) )
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection response. the cookie was already used\n" );
         return;

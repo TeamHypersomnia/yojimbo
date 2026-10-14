@@ -1131,7 +1131,7 @@ int netcode_decrypt_aead( uint8_t * message, uint64_t message_length,
 #define NETCODE_RESPONSE_PLAINTEXT_BYTES        ( NETCODE_COOKIE_BYTES + NETCODE_CONNECTION_SECRET_BYTES + NETCODE_SIGNATURE_BYTES + NETCODE_USER_DATA_BYTES )
 #define NETCODE_HANDSHAKE_RESPONSE_BYTES        ( 1 + NETCODE_COOKIE_BYTES + crypto_box_SEALBYTES + NETCODE_RESPONSE_PLAINTEXT_BYTES )
 
-#define NETCODE_USED_COOKIES                    1024
+#define NETCODE_USED_COOKIES                    4096
 
 typedef char netcode_challenge_fits_in_request[ ( NETCODE_HANDSHAKE_CHALLENGE_BYTES <= NETCODE_HANDSHAKE_REQUEST_BYTES ) ? 1 : -1 ];
 typedef char netcode_version_fits_in_request[ ( NETCODE_HANDSHAKE_VERSION_BYTES <= NETCODE_HANDSHAKE_REQUEST_BYTES ) ? 1 : -1 ];
@@ -3603,6 +3603,7 @@ struct netcode_server_t
     double handshake_rate_last_time;
     double handshake_rate_tokens;
     uint8_t used_cookies[NETCODE_USED_COOKIES][NETCODE_MAC_BYTES];
+    double used_cookie_times[NETCODE_USED_COOKIES];
     int used_cookie_next;
     double rate_limit_last_logged;
     double table_full_last_logged;
@@ -3878,6 +3879,9 @@ void netcode_server_start( struct netcode_server_t * server, int max_clients )
     netcode_generate_key( server->cookie_key );
     memset( server->used_cookies, 0, sizeof( server->used_cookies ) );
     server->used_cookie_next = 0;
+
+    for ( int i = 0; i < NETCODE_USED_COOKIES; i++ )
+        server->used_cookie_times[i] = -1000.0;
 
     server->handshake_rate_last_time = server->time;
     server->handshake_rate_tokens = 2.0 * server->config.handshakes_per_second;
@@ -4438,6 +4442,16 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
 
     uint8_t * user_data = q;
 
+    // the ring must outlive every cookie in it: one still live would be forgotten and its recorded response could be
+    // replayed (the same keys, the nonces again from 0) - refused instead, as for too many handshakes
+
+    if ( server->time - server->used_cookie_times[server->used_cookie_next] < NETCODE_COOKIE_SECONDS + 1 )
+    {
+        sodium_memzero( plaintext, sizeof( plaintext ) );
+        netcode_server_log_refusal( server, &server->rate_limit_last_logged, "a handshake was refused (too many handshakes for all)" );
+        return;
+    }
+
     uint8_t client_to_server_key[NETCODE_KEY_BYTES];
     uint8_t server_to_client_key[NETCODE_KEY_BYTES];
     netcode_derive_packet_keys( connection_secret, client_to_server_key, server_to_client_key );
@@ -4461,6 +4475,7 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
     sodium_memzero( server_to_client_key, NETCODE_KEY_BYTES );
 
     memcpy( server->used_cookies[server->used_cookie_next], mac, NETCODE_MAC_BYTES );
+    server->used_cookie_times[server->used_cookie_next] = server->time;
     server->used_cookie_next = ( server->used_cookie_next + 1 ) % NETCODE_USED_COOKIES;
 
     const int encryption_index = netcode_encryption_manager_find_encryption_mapping( &server->encryption_manager, from, server->time );

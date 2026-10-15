@@ -2693,6 +2693,8 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
         return;
     }
 
+    const int had_server_public_key = client->has_server_public_key;
+
     if ( client->has_server_public_key && sodium_memcmp( server_public_key, client->server_public_key, NETCODE_PUBLIC_KEY_BYTES ) != 0 )
     {
         /*
@@ -2710,6 +2712,18 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
 
     if ( flags & NETCODE_CHALLENGE_FLAG_SERVER_FULL )
     {
+        /*
+            Already answering a challenge that took us in: a "full" now (anyone can send one) ends nothing.
+        */
+
+        if ( client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_RESPONSE )
+            return;
+
+        // only the server being joined says so - not a fallback (e.g. one's own server on 127.0.0.1)
+
+        if ( client->server_address_index != 0 )
+            return;
+
         if ( client->server_full_since < 0.0 )
             client->server_full_since = client->time;
 
@@ -2719,6 +2733,23 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
     // a challenge that does not say full ends a "full" spell, whatever its cookie
 
     client->server_full_since = -1.0;
+
+    /*
+        A new key replaces the one in use only once the response to it is sealed - a challenge that can not be answered
+        (e.g. a forged key that is no valid point) leaves the connection being made as it was.
+    */
+
+    uint8_t previous_server_public_key[NETCODE_PUBLIC_KEY_BYTES];
+    uint8_t previous_connection_secret[NETCODE_CONNECTION_SECRET_BYTES];
+    uint8_t previous_write_packet_key[NETCODE_KEY_BYTES];
+    uint8_t previous_read_packet_key[NETCODE_KEY_BYTES];
+    uint8_t previous_cookie[NETCODE_COOKIE_BYTES];
+
+    memcpy( previous_server_public_key, client->server_public_key, NETCODE_PUBLIC_KEY_BYTES );
+    memcpy( previous_connection_secret, client->connection_secret, NETCODE_CONNECTION_SECRET_BYTES );
+    memcpy( previous_write_packet_key, client->context.write_packet_key, NETCODE_KEY_BYTES );
+    memcpy( previous_read_packet_key, client->context.read_packet_key, NETCODE_KEY_BYTES );
+    memcpy( previous_cookie, client->cookie, NETCODE_COOKIE_BYTES );
 
     if ( !client->has_server_public_key )
     {
@@ -2730,17 +2761,26 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
     }
     else if ( sodium_memcmp( cookie, client->cookie, NETCODE_COOKIE_BYTES ) == 0 )
     {
+        sodium_memzero( previous_connection_secret, sizeof( previous_connection_secret ) );
         return;
     }
 
     if ( !netcode_client_prepare_response( client, cookie ) )
     {
-        // e.g. a forged key that is no valid point - ignored, a real challenge may still come
-
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client ignored challenge packet. could not seal the response to its key\n" );
-        client->has_server_public_key = 0;
+
+        memcpy( client->server_public_key, previous_server_public_key, NETCODE_PUBLIC_KEY_BYTES );
+        memcpy( client->connection_secret, previous_connection_secret, NETCODE_CONNECTION_SECRET_BYTES );
+        memcpy( client->context.write_packet_key, previous_write_packet_key, NETCODE_KEY_BYTES );
+        memcpy( client->context.read_packet_key, previous_read_packet_key, NETCODE_KEY_BYTES );
+        memcpy( client->cookie, previous_cookie, NETCODE_COOKIE_BYTES );
+        client->has_server_public_key = had_server_public_key;
+
+        sodium_memzero( previous_connection_secret, sizeof( previous_connection_secret ) );
         return;
     }
+
+    sodium_memzero( previous_connection_secret, sizeof( previous_connection_secret ) );
 
     netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client received connection challenge packet from server\n" );
 
@@ -2769,6 +2809,7 @@ static void netcode_client_process_handshake_packet( struct netcode_client_t * c
         {
             if ( packet_bytes == NETCODE_HANDSHAKE_VERSION_BYTES && 
                  ( client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST || client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_RESPONSE ) &&
+                 client->server_address_index == 0 &&
                  !netcode_version_info_equal( packet_data + 1 ) )
             {
                 netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client received a version packet: the server runs another version\n" );
@@ -3131,11 +3172,13 @@ void netcode_client_update( struct netcode_client_t * client, double time )
             netcode_printf( NETCODE_LOG_LEVEL_INFO, "client connect failed: %s\n", netcode_client_state_name( failed_state ) );
 
             /*
-                A server answered there with another key: it is up, just not the one expected - no fallback
-                (e.g. 127.0.0.1, for one's own server behind the same router) is it either.
+                A server answered there - with another key, "full" or another version: it is up, just not to be joined -
+                and no fallback (e.g. 127.0.0.1, for one's own server behind the same router) is it either.
             */
 
-            if ( !other_key_for_long && netcode_client_connect_to_next_server( client ) )
+            const int server_answered = other_key_for_long || client->saw_version_mismatch || client->server_full_since >= 0.0;
+
+            if ( !server_answered && netcode_client_connect_to_next_server( client ) )
                 return;
 
             netcode_client_disconnect_internal( client, failed_state, 0 );
@@ -3625,6 +3668,7 @@ struct netcode_server_t
     double handshake_rate_last_time;
     double handshake_rate_tokens;
     uint8_t used_cookies[NETCODE_USED_COOKIES][NETCODE_MAC_BYTES];
+    uint8_t used_secrets[NETCODE_USED_COOKIES][16];
     double used_cookie_times[NETCODE_USED_COOKIES];
     int used_cookie_next;
     double rate_limit_last_logged;
@@ -3900,6 +3944,7 @@ void netcode_server_start( struct netcode_server_t * server, int max_clients )
 
     netcode_generate_key( server->cookie_key );
     memset( server->used_cookies, 0, sizeof( server->used_cookies ) );
+    memset( server->used_secrets, 0, sizeof( server->used_secrets ) );
     server->used_cookie_next = 0;
 
     for ( int i = 0; i < NETCODE_USED_COOKIES; i++ )
@@ -4381,6 +4426,30 @@ static int netcode_server_cookie_used( struct netcode_server_t * server, NETCODE
     return 0;
 }
 
+/*
+    A client answering several challenges (a long round trip, a stale cookie) seals the same connection secret under each
+    cookie. Once one of those responses made a connection, the others - each with a cookie of its own - are refused by
+    the secret: replayed later from the same address they would make a connection with the same keys, its nonces from 0
+    again. Back only as far as any cookie lives.
+*/
+
+static int netcode_server_secret_used( struct netcode_server_t * server, NETCODE_CONST uint8_t * secret_hash )
+{
+    int n;
+    for ( n = 0; n < NETCODE_USED_COOKIES; n++ )
+    {
+        const int i = ( server->used_cookie_next - 1 - n + 2 * NETCODE_USED_COOKIES ) % NETCODE_USED_COOKIES;
+
+        if ( server->used_cookie_times[i] < server->time - ( NETCODE_COOKIE_SECONDS + 1 ) )
+            break;
+
+        if ( sodium_memcmp( server->used_secrets[i], secret_hash, 16 ) == 0 )
+            return 1;
+    }
+
+    return 0;
+}
+
 static void netcode_server_process_handshake_response( struct netcode_server_t * server, struct netcode_address_t * from, uint8_t * packet_data, int packet_bytes )
 {
     if ( packet_bytes != NETCODE_HANDSHAKE_RESPONSE_BYTES )
@@ -4474,6 +4543,16 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
 
     uint8_t * user_data = q;
 
+    uint8_t secret_hash[16];
+    crypto_generichash( secret_hash, sizeof( secret_hash ), connection_secret, NETCODE_CONNECTION_SECRET_BYTES, NULL, 0 );
+
+    if ( netcode_server_secret_used( server, secret_hash ) )
+    {
+        sodium_memzero( plaintext, sizeof( plaintext ) );
+        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection response. its connection secret was already used\n" );
+        return;
+    }
+
     // the ring must outlive every cookie in it: one still live would be forgotten and its recorded response could be
     // replayed (the same keys, the nonces again from 0) - refused instead, as for too many handshakes
 
@@ -4507,6 +4586,7 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
     sodium_memzero( server_to_client_key, NETCODE_KEY_BYTES );
 
     memcpy( server->used_cookies[server->used_cookie_next], mac, NETCODE_MAC_BYTES );
+    memcpy( server->used_secrets[server->used_cookie_next], secret_hash, sizeof( secret_hash ) );
     server->used_cookie_times[server->used_cookie_next] = server->time;
     server->used_cookie_next = ( server->used_cookie_next + 1 ) % NETCODE_USED_COOKIES;
 

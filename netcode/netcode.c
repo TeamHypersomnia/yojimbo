@@ -9661,6 +9661,54 @@ void test_handshake_response_replay()
     test_wire_destroy();
 }
 
+void test_handshake_secret_used_once()
+{
+    test_wire_create( 0 );
+
+    // a client answering two challenges seals one secret under two cookies: once one of those responses made a
+    // connection, the other - replayed after the client left - must not make one with the same keys again
+
+    test_wire.server->flags = NETCODE_SERVER_FLAG_IGNORE_CONNECTION_RESPONSE_PACKETS;
+
+    NETCODE_CONST char * server_address = "[::1]:40000";
+    test_connect( test_wire.client, 1, &server_address, NULL );
+
+    double time = 0.0;
+
+    netcode_client_update( test_wire.client, time );
+    netcode_server_update( test_wire.server, time );
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_SENDING_CONNECTION_RESPONSE );
+
+    uint8_t first_response[NETCODE_HANDSHAKE_RESPONSE_BYTES];
+    memcpy( first_response, test_wire.client->response_packet, NETCODE_HANDSHAKE_RESPONSE_BYTES );
+
+    // a later challenge (e.g. a long round trip): another cookie, the same secret
+
+    time += 0.05;
+    netcode_server_update( test_wire.server, time );
+    netcode_server_send_challenge( test_wire.server, &test_wire.client_address );
+    netcode_client_process_packet( test_wire.client, &test_wire.server_address, test_wire.last_server_packet, test_wire.last_server_packet_bytes );
+
+    uint8_t second_response[NETCODE_HANDSHAKE_RESPONSE_BYTES];
+    memcpy( second_response, test_wire.client->response_packet, NETCODE_HANDSHAKE_RESPONSE_BYTES );
+
+    check( memcmp( first_response, second_response, NETCODE_HANDSHAKE_RESPONSE_BYTES ) != 0 );
+
+    test_wire.server->flags = 0;
+
+    netcode_server_process_packet( test_wire.server, &test_wire.client_address, first_response, NETCODE_HANDSHAKE_RESPONSE_BYTES );
+    check( netcode_server_num_connected_clients( test_wire.server ) == 1 );
+
+    netcode_server_disconnect_client( test_wire.server, 0 );
+    check( netcode_server_num_connected_clients( test_wire.server ) == 0 );
+
+    netcode_server_process_packet( test_wire.server, &test_wire.client_address, second_response, NETCODE_HANDSHAKE_RESPONSE_BYTES );
+    check( netcode_server_num_connected_clients( test_wire.server ) == 0 );
+
+    test_wire_destroy();
+}
+
 void test_handshake_forged_challenge()
 {
     test_wire_create( 0 );
@@ -10027,6 +10075,7 @@ void netcode_test()
         RUN_TEST( test_handshake_without_session_key );
         RUN_TEST( test_handshake_server_key_mismatch );
         RUN_TEST( test_handshake_response_replay );
+        RUN_TEST( test_handshake_secret_used_once );
         RUN_TEST( test_handshake_stale_cookie );
         RUN_TEST( test_handshake_forged_challenge );
         RUN_TEST( test_handshake_forged_challenge_other_key );

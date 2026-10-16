@@ -113,6 +113,14 @@
 #define NETCODE_SECRET_KEY_BYTES 64
 #define NETCODE_SIGNATURE_BYTES 64
 #define NETCODE_BINDING_BYTES 32
+
+/*
+    The session key signs this tag followed by the connection's binding - never the bare 32 bytes, so that no signature
+    for something else made with that key (e.g. the account's unlink message) could pass for one, or the other way round.
+*/
+
+#define NETCODE_SESSION_SIGNATURE_TAG "hs-conn-sig-v1"
+#define NETCODE_SESSION_SIGNATURE_TAG_BYTES 14
 #define NETCODE_DEFAULT_CONNECT_TIMEOUT_SECONDS 5
 #define NETCODE_DEFAULT_HANDSHAKES_PER_SECOND 100.0
 

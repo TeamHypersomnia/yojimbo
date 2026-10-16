@@ -2626,7 +2626,11 @@ static int netcode_client_prepare_response( struct netcode_client_t * client, NE
 
     if ( client->has_session_secret_key )
     {
-        if ( crypto_sign_detached( p, NULL, binding, NETCODE_BINDING_BYTES, client->session_secret_key ) != 0 )
+        uint8_t signed_message[NETCODE_SESSION_SIGNATURE_TAG_BYTES + NETCODE_BINDING_BYTES];
+        memcpy( signed_message, NETCODE_SESSION_SIGNATURE_TAG, NETCODE_SESSION_SIGNATURE_TAG_BYTES );
+        memcpy( signed_message + NETCODE_SESSION_SIGNATURE_TAG_BYTES, binding, NETCODE_BINDING_BYTES );
+
+        if ( crypto_sign_detached( p, NULL, signed_message, sizeof( signed_message ), client->session_secret_key ) != 0 )
         {
             sodium_memzero( plaintext, sizeof( plaintext ) );
             return 0;
@@ -9560,13 +9564,19 @@ void test_handshake_binding_and_signature()
 
     check( memcmp( netcode_server_client_user_data( test_wire.server, 0 ), user_data, NETCODE_USER_DATA_BYTES ) == 0 );
 
-    // the session signature verifies over the binding with the session key, and with nothing else
+    // the session signature verifies over the tag and the binding with the session key, and with nothing else -
+    // never over the bare binding
 
     NETCODE_CONST uint8_t * binding = netcode_server_client_binding( test_wire.server, 0 );
     NETCODE_CONST uint8_t * signature = netcode_server_client_session_signature( test_wire.server, 0 );
 
-    check( crypto_sign_verify_detached( signature, binding, NETCODE_BINDING_BYTES, test_session_public_key ) == 0 );
-    check( crypto_sign_verify_detached( signature, binding, NETCODE_BINDING_BYTES, test_server_public_key ) != 0 );
+    uint8_t signed_message[NETCODE_SESSION_SIGNATURE_TAG_BYTES + NETCODE_BINDING_BYTES];
+    memcpy( signed_message, NETCODE_SESSION_SIGNATURE_TAG, NETCODE_SESSION_SIGNATURE_TAG_BYTES );
+    memcpy( signed_message + NETCODE_SESSION_SIGNATURE_TAG_BYTES, binding, NETCODE_BINDING_BYTES );
+
+    check( crypto_sign_verify_detached( signature, signed_message, sizeof( signed_message ), test_session_public_key ) == 0 );
+    check( crypto_sign_verify_detached( signature, signed_message, sizeof( signed_message ), test_server_public_key ) != 0 );
+    check( crypto_sign_verify_detached( signature, binding, NETCODE_BINDING_BYTES, test_session_public_key ) != 0 );
 
     // the client learned the very key the server holds
 

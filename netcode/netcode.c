@@ -2613,6 +2613,8 @@ int netcode_client_server_address_index( struct netcode_client_t * client )
     with the same connection secret under the new cookie.
 */
 
+_Static_assert( sizeof( NETCODE_SESSION_SIGNATURE_TAG ) - 1 == NETCODE_SESSION_SIGNATURE_TAG_BYTES, "the session signature tag's length" );
+
 static int netcode_client_prepare_response( struct netcode_client_t * client, NETCODE_CONST uint8_t * cookie )
 {
     uint8_t binding[NETCODE_BINDING_BYTES];
@@ -2764,9 +2766,10 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
         return;
     }
 
-    // a challenge that does not say full ends a "full" spell, whatever its cookie
+    // a challenge that says neither ends a "full" spell and an "in a match" one, whatever its cookie
 
     client->server_full_since = -1.0;
+    client->saw_match_in_progress = 0;
 
     /*
         A new key replaces the one in use only once the response to it is sealed - a challenge that can not be answered

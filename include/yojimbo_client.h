@@ -59,6 +59,7 @@ namespace yojimbo
         YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_TIMED_OUT,              ///< The established connection timed out. We stopped hearing from the server.
         YOJIMBO_CLIENT_DISCONNECT_REASON_SERVER_KEY_MISMATCH,               ///< The server presented another public key than the one expected (e.g. from the server list).
         YOJIMBO_CLIENT_DISCONNECT_REASON_VERSION_MISMATCH,                  ///< The server runs another version of the protocol.
+        YOJIMBO_CLIENT_DISCONNECT_REASON_MATCH_IN_PROGRESS,                 ///< The server takes no one new now (a match in progress).
         YOJIMBO_CLIENT_DISCONNECT_REASON_FAILED_TO_SERIALIZE,               ///< A message from the server failed to serialize read. Usually a client/server protocol version mismatch, or a bug in a message serialize function.
         YOJIMBO_CLIENT_DISCONNECT_REASON_DESYNC,                            ///< A channel desynced and cannot recover. See CHANNEL_ERROR_DESYNC.
         YOJIMBO_CLIENT_DISCONNECT_REASON_SEND_QUEUE_FULL,                   ///< A channel send queue filled up. See CHANNEL_ERROR_SEND_QUEUE_FULL.
@@ -83,6 +84,7 @@ namespace yojimbo
             case YOJIMBO_CLIENT_DISCONNECT_REASON_CONNECTION_TIMED_OUT:             return "connection timed out";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_SERVER_KEY_MISMATCH:              return "server key mismatch";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_VERSION_MISMATCH:                 return "version mismatch";
+            case YOJIMBO_CLIENT_DISCONNECT_REASON_MATCH_IN_PROGRESS:                return "match in progress";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_FAILED_TO_SERIALIZE:              return "failed to serialize";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_DESYNC:                           return "desync";
             case YOJIMBO_CLIENT_DISCONNECT_REASON_SEND_QUEUE_FULL:                  return "send queue full";

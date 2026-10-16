@@ -53,7 +53,13 @@
 #define NETCODE_SERVER_SOCKET_SNDBUF_SIZE ( 4 * 1024 * 1024 )
 #define NETCODE_SERVER_SOCKET_RCVBUF_SIZE ( 4 * 1024 * 1024 )
 
-#define NETCODE_VERSION_INFO ( (uint8_t*) "HYPERSOMNIA3" )
+/*
+    What the game's protocol is (netcode_set_version_info) - a client and a server of another one never connect, and the
+    client is told it is another version. Part of every handshake's and packet's authenticated data.
+*/
+
+static uint8_t netcode_version_info[NETCODE_VERSION_INFO_BYTES] = "HYPERSOMNIA3";
+#define NETCODE_VERSION_INFO netcode_version_info
 #define NETCODE_PACKET_SEND_RATE 10.0
 #define NETCODE_NUM_DISCONNECT_PACKETS 10
 
@@ -423,6 +429,12 @@ struct netcode_t
 };
 
 static struct netcode_t netcode;
+
+void netcode_set_version_info( NETCODE_CONST char * version )
+{
+    memset( netcode_version_info, 0, sizeof( netcode_version_info ) );
+    strncpy( (char*) netcode_version_info, version, NETCODE_VERSION_INFO_BYTES - 1 );
+}
 
 int netcode_init()
 {
@@ -1124,6 +1136,7 @@ int netcode_decrypt_aead( uint8_t * message, uint64_t message_length,
 #define NETCODE_CONNECTION_SECRET_BYTES         32
 
 #define NETCODE_CHALLENGE_FLAG_SERVER_FULL      1
+#define NETCODE_CHALLENGE_FLAG_MATCH_IN_PROGRESS 2
 
 #define NETCODE_HANDSHAKE_REQUEST_BYTES         96
 #define NETCODE_HANDSHAKE_CHALLENGE_BYTES       ( 1 + NETCODE_COOKIE_BYTES + NETCODE_PUBLIC_KEY_BYTES + 1 )
@@ -2154,6 +2167,7 @@ NETCODE_CONST char * netcode_client_state_name( int client_state )
     switch ( client_state )
     {
         case NETCODE_CLIENT_STATE_SERVER_KEY_MISMATCH:                  return "server key mismatch";
+        case NETCODE_CLIENT_STATE_MATCH_IN_PROGRESS:                    return "match in progress";
         case NETCODE_CLIENT_STATE_VERSION_MISMATCH:                     return "version mismatch";
         case NETCODE_CLIENT_STATE_CONNECTION_TIMED_OUT:                 return "connection timed out";
         case NETCODE_CLIENT_STATE_CONNECTION_REQUEST_TIMED_OUT:         return "connection request timed out";
@@ -2228,6 +2242,7 @@ struct netcode_client_t
     int saw_server_key_mismatch;
     double server_key_mismatch_since;
     int saw_version_mismatch;
+    int saw_match_in_progress;
     double server_full_since;
 
     uint8_t * receive_packet_data[NETCODE_CLIENT_MAX_RECEIVE_PACKETS];
@@ -2288,6 +2303,7 @@ static void netcode_client_clear_failure_hints( struct netcode_client_t * client
     client->saw_server_key_mismatch = 0;
     client->server_key_mismatch_since = -1.0;
     client->saw_version_mismatch = 0;
+    client->saw_match_in_progress = 0;
     client->server_full_since = -1.0;
 }
 
@@ -2703,11 +2719,25 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
             one sealed to someone else's key must never reach the real server. A "full" answer is no reason to switch.
         */
 
-        if ( flags & NETCODE_CHALLENGE_FLAG_SERVER_FULL )
+        if ( flags & ( NETCODE_CHALLENGE_FLAG_SERVER_FULL | NETCODE_CHALLENGE_FLAG_MATCH_IN_PROGRESS ) )
             return;
 
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "client took another server public key\n" );
         client->has_server_public_key = 0;
+    }
+
+    /*
+        "In a match": the server takes no one new now (a ranked match that waits for nobody) - but it may in a moment (a
+        player of the match just dropped is taken back once the server counts them as gone), so the requests go on for
+        the whole attempt and this is only the reason it ends with.
+    */
+
+    if ( flags & NETCODE_CHALLENGE_FLAG_MATCH_IN_PROGRESS )
+    {
+        if ( client->server_address_index == 0 && client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST )
+            client->saw_match_in_progress = 1;
+
+        return;
     }
 
     if ( flags & NETCODE_CHALLENGE_FLAG_SERVER_FULL )
@@ -3108,6 +3138,9 @@ static int netcode_client_failed_attempt_state( struct netcode_client_t * client
     if ( client->saw_version_mismatch )
         return NETCODE_CLIENT_STATE_VERSION_MISMATCH;
 
+    if ( client->saw_match_in_progress )
+        return NETCODE_CLIENT_STATE_MATCH_IN_PROGRESS;
+
     if ( client->server_full_since >= 0.0 )
         return NETCODE_CLIENT_STATE_CONNECTION_DENIED;
 
@@ -3176,7 +3209,11 @@ void netcode_client_update( struct netcode_client_t * client, double time )
                 and no fallback (e.g. 127.0.0.1, for one's own server behind the same router) is it either.
             */
 
-            const int server_answered = other_key_for_long || client->saw_version_mismatch || client->server_full_since >= 0.0;
+            const int server_answered =
+                other_key_for_long ||
+                client->saw_version_mismatch ||
+                client->saw_match_in_progress ||
+                client->server_full_since >= 0.0;
 
             if ( !server_answered && netcode_client_connect_to_next_server( client ) )
                 return;
@@ -3660,6 +3697,7 @@ struct netcode_server_t
     int running;
     int max_clients;
     int num_connected_clients;
+    int refusing_new_clients;
     uint64_t global_sequence;
     uint8_t public_key[NETCODE_PUBLIC_KEY_BYTES];
     uint8_t x25519_public_key[crypto_box_PUBLICKEYBYTES];
@@ -4313,7 +4351,9 @@ static void netcode_server_send_challenge( struct netcode_server_t * server, str
 
     netcode_write_bytes( &p, server->public_key, NETCODE_PUBLIC_KEY_BYTES );
 
-    const uint8_t flags = server->num_connected_clients >= server->max_clients ? NETCODE_CHALLENGE_FLAG_SERVER_FULL : 0;
+    const uint8_t flags =
+        ( server->num_connected_clients >= server->max_clients ? NETCODE_CHALLENGE_FLAG_SERVER_FULL : 0 ) |
+        ( server->refusing_new_clients ? NETCODE_CHALLENGE_FLAG_MATCH_IN_PROGRESS : 0 );
     netcode_write_uint8( &p, flags );
 
     netcode_assert( p - packet_data == NETCODE_HANDSHAKE_CHALLENGE_BYTES );
@@ -4501,6 +4541,12 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
     if ( server->num_connected_clients >= server->max_clients )
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection response. server is full\n" );
+        return;
+    }
+
+    if ( server->refusing_new_clients )
+    {
+        netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection response. it takes no new clients now\n" );
         return;
     }
 
@@ -5066,6 +5112,12 @@ void netcode_server_free_packet( struct netcode_server_t * server, void * packet
     (void) server;
     int offset = offsetof( struct netcode_connection_payload_packet_t, payload_data );
     server->config.free_function( server->config.allocator_context, ( (uint8_t*) packet ) - offset );
+}
+
+void netcode_server_set_refusing_new_clients( struct netcode_server_t * server, int refusing )
+{
+    netcode_assert( server );
+    server->refusing_new_clients = refusing;
 }
 
 int netcode_server_num_connected_clients( struct netcode_server_t * server )
@@ -9901,6 +9953,71 @@ void test_handshake_version_mismatch()
     test_wire_destroy();
 }
 
+void test_handshake_match_in_progress()
+{
+    test_wire_create( 0 );
+
+    double time = 0.0;
+
+    // a server taking no one new (a match in progress) answers so: the client tells it and nobody connects
+
+    netcode_server_set_refusing_new_clients( test_wire.server, 1 );
+
+    NETCODE_CONST char * server_address = "[::1]:40000";
+    test_connect( test_wire.client, 1, &server_address, NULL );
+
+    test_wire_run( &time, 0.1, NETCODE_DEFAULT_CONNECT_TIMEOUT_SECONDS + 1.0 );
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_MATCH_IN_PROGRESS );
+    check( netcode_server_num_connected_clients( test_wire.server ) == 0 );
+
+    // taking clients again while an attempt goes on (a player of the match counted as gone): the same attempt connects
+
+    test_connect( test_wire.client, 1, &server_address, NULL );
+
+    test_wire_run( &time, 0.1, 2.0 );
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST );
+
+    netcode_server_set_refusing_new_clients( test_wire.server, 0 );
+
+    test_wire_run( &time, 0.1, 2.0 );
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_CONNECTED );
+    check( netcode_server_num_connected_clients( test_wire.server ) == 1 );
+
+    // a client already in stays when the server starts refusing
+
+    netcode_server_set_refusing_new_clients( test_wire.server, 1 );
+
+    test_wire_run( &time, 0.1, 2.0 );
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_CONNECTED );
+
+    test_wire_destroy();
+}
+
+void test_version_info_set_by_the_game()
+{
+    // what the game sets is what the handshake carries - zero-filled, never longer than 12 characters
+
+    uint8_t saved[NETCODE_VERSION_INFO_BYTES];
+    memcpy( saved, NETCODE_VERSION_INFO, NETCODE_VERSION_INFO_BYTES );
+
+    netcode_set_version_info( "HS3.1" );
+
+    uint8_t expected[NETCODE_VERSION_INFO_BYTES];
+    memset( expected, 0, sizeof( expected ) );
+    memcpy( expected, "HS3.1", 5 );
+
+    check( memcmp( NETCODE_VERSION_INFO, expected, NETCODE_VERSION_INFO_BYTES ) == 0 );
+
+    netcode_set_version_info( "A_VERY_LONG_VERSION_NAME" );
+    check( NETCODE_VERSION_INFO[NETCODE_VERSION_INFO_BYTES - 1] == 0 );
+
+    memcpy( NETCODE_VERSION_INFO, saved, NETCODE_VERSION_INFO_BYTES );
+}
+
 static int test_allow_handshake_refused_port = 0;
 
 static int test_allow_handshake( void * context, NETCODE_CONST struct netcode_address_t * address )
@@ -10080,6 +10197,8 @@ void netcode_test()
         RUN_TEST( test_handshake_forged_challenge );
         RUN_TEST( test_handshake_forged_challenge_other_key );
         RUN_TEST( test_handshake_version_mismatch );
+        RUN_TEST( test_handshake_match_in_progress );
+        RUN_TEST( test_version_info_set_by_the_game );
         RUN_TEST( test_handshake_rate_limit );
         RUN_TEST( test_handshake_nothing_accumulates );
 #if NETCODE_PACKET_TAGGING

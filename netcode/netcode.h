@@ -116,6 +116,7 @@
 #define NETCODE_DEFAULT_CONNECT_TIMEOUT_SECONDS 5
 #define NETCODE_DEFAULT_HANDSHAKES_PER_SECOND 100.0
 
+#define NETCODE_CLIENT_STATE_MATCH_IN_PROGRESS                  -9
 #define NETCODE_CLIENT_STATE_SERVER_KEY_MISMATCH                -8
 #define NETCODE_CLIENT_STATE_VERSION_MISMATCH                   -7
 #define NETCODE_CLIENT_STATE_CONNECTION_TIMED_OUT               -4
@@ -185,6 +186,12 @@ extern "C" {
 #endif
 
 int netcode_init();
+
+/*
+    The game's protocol version - at most 12 characters, set once before any client or server is made.
+*/
+
+void netcode_set_version_info( NETCODE_CONST char * version );
 
 void netcode_term();
 
@@ -420,6 +427,13 @@ void netcode_server_send_packet( struct netcode_server_t * server, int client_in
 uint8_t * netcode_server_receive_packet( struct netcode_server_t * server, int client_index, int * packet_bytes, uint64_t * packet_sequence );
 
 void netcode_server_free_packet( struct netcode_server_t * server, void * packet );
+
+/*
+    Refusing, a server answers a new client's request that it takes no one new now (the client ends in
+    NETCODE_CLIENT_STATE_MATCH_IN_PROGRESS) instead of leaving it to time out - clients already connected stay.
+*/
+
+void netcode_server_set_refusing_new_clients( struct netcode_server_t * server, int refusing );
 
 int netcode_server_num_connected_clients( struct netcode_server_t * server );
 

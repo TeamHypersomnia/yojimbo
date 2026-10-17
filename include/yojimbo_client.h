@@ -39,8 +39,8 @@ namespace yojimbo
         The reason this client was last disconnected.
 
         This lets you distinguish what to show the player and what to do next: a denied connection (eg. server full),
-        an expired or invalid connect token (eg. matchmaking took too long, or a client/server version mismatch),
-        a timeout, or a protocol error such as a message that failed to serialize.
+        another server key or protocol version than expected, a timeout, or a protocol error such as a message that
+        failed to serialize.
 
         Cleared to YOJIMBO_CLIENT_DISCONNECT_REASON_NONE when a new connect attempt starts. The first reason recorded
         for a disconnect wins, so a specific error is never overwritten by the generic disconnect that follows it.
@@ -194,7 +194,7 @@ namespace yojimbo
         netcode_client_t * m_client;                    ///< netcode client data.
         Address m_address;                              ///< Original address passed to ctor.
         Address m_boundAddress;                         ///< Address after socket bind, eg. with valid port. Custom packet I/O: stays the ctor-supplied synthetic address (no socket bind).
-        uint64_t m_clientId;                            ///< The globally unique client id (set on each call to connect)
+        uint64_t m_clientId;                            ///< Always 0 - the server knows a client by its connection, not by an id given by the client.
         bool m_disconnecting;                           ///< True while Disconnect tears the client down. Makes a reentrant Disconnect from an adapter callback during teardown a harmless no-op.
 
 		client_adapter* m_parent;

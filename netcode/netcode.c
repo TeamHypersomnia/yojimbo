@@ -1133,6 +1133,8 @@ int netcode_decrypt_aead( uint8_t * message, uint64_t message_length,
 
 #define NETCODE_COOKIE_BYTES                    24
 #define NETCODE_COOKIE_SECONDS                  10
+#define NETCODE_FULL_GRACE_SECONDS              1.0
+#define NETCODE_OTHER_KEY_GRACE_SECONDS         3.0
 #define NETCODE_CONNECTION_SECRET_BYTES         32
 
 #define NETCODE_CHALLENGE_FLAG_SERVER_FULL      1
@@ -2239,8 +2241,10 @@ struct netcode_client_t
     uint8_t connection_secret[NETCODE_CONNECTION_SECRET_BYTES];
     uint8_t cookie[NETCODE_COOKIE_BYTES];
     uint8_t response_packet[NETCODE_HANDSHAKE_RESPONSE_BYTES];
+
+    // why the attempts failed - over all the addresses of one connect (see netcode_client_clear_failure_hints)
+
     int saw_server_key_mismatch;
-    double server_key_mismatch_since;
     int saw_version_mismatch;
     int saw_match_in_progress;
     double server_full_since;
@@ -2301,7 +2305,6 @@ int netcode_client_socket_create( struct netcode_socket_t * socket,
 static void netcode_client_clear_failure_hints( struct netcode_client_t * client )
 {
     client->saw_server_key_mismatch = 0;
-    client->server_key_mismatch_since = -1.0;
     client->saw_version_mismatch = 0;
     client->saw_match_in_progress = 0;
     client->server_full_since = -1.0;
@@ -2707,9 +2710,6 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
         if ( client->server_address_index == 0 )
         {
             client->saw_server_key_mismatch = 1;
-
-            if ( client->server_key_mismatch_since < 0.0 )
-                client->server_key_mismatch_since = client->time;
         }
 
         return;
@@ -3185,7 +3185,7 @@ void netcode_client_update( struct netcode_client_t * client, double time )
             A server that says it is full is given a second to have a slot after all.
         */
 
-        const int full_for_long = client->server_full_since >= 0.0 && client->server_full_since + 1.0 <= time;
+        const int full_for_long = client->server_full_since >= 0.0 && client->server_full_since + NETCODE_FULL_GRACE_SECONDS <= time;
         const int attempt_timed_out = client->connect_start_time + client->config.connect_timeout_seconds <= time;
 
         /*
@@ -3198,7 +3198,7 @@ void netcode_client_update( struct netcode_client_t * client, double time )
         const int other_key_for_long = 
             client->server_address_index == 0 &&
             client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST &&
-            client->server_key_mismatch_since >= 0.0 && client->connect_start_time + 3.0 <= time;
+            client->saw_server_key_mismatch && client->connect_start_time + NETCODE_OTHER_KEY_GRACE_SECONDS <= time;
 
         if ( full_for_long || attempt_timed_out || other_key_for_long )
         {
@@ -5995,7 +5995,6 @@ static void test_address()
 #define TEST_PROTOCOL_ID            0x1122334455667788ULL
 #define TEST_CLIENT_ID              0x1ULL
 #define TEST_SERVER_PORT            40000
-#define TEST_CONNECT_TOKEN_EXPIRY   30
 #define TEST_TIMEOUT_SECONDS        15
 
 

@@ -1,3 +1,7 @@
+> **Hypersomnia fork:** there are no connect tokens, no `InsecureConnect`, no matcher and no fuzzers or CI here.
+> Every server has an Ed25519 key and the handshake is the one described in `netcode/netcode.h` (REQUEST, CHALLENGE,
+> RESPONSE with a sealed box to the server key). Whatever this file says about connect tokens describes upstream yojimbo.
+
 # yojimbo
 
 [![CI](https://github.com/mas-bandwidth/yojimbo/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/yojimbo/actions/workflows/ci.yml)

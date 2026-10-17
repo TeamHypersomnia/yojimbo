@@ -100,7 +100,8 @@
     (the X25519 key it seals to is derived from it). The handshake:
 
         client -> server   REQUEST    version and protocol id, padded so that no answer is larger
-        server -> client   CHALLENGE  a stateless cookie bound to the client address, the server public key, flags
+        server -> client   CHALLENGE  a stateless cookie (bound to the client address and the time), the server
+                                      public key and flags
         client -> server   RESPONSE   the cookie and a sealed box to the server key holding the cookie again,
                                       a fresh connection secret, the session signature and the user data
 

@@ -2492,7 +2492,7 @@ void test_client_connect_socket_failure_no_crash()
     // Regression: Connect() and ConnectLoopback() called into netcode_client_connect() without
     // checking that CreateClient() succeeded. When the socket can't be created - forced here with
     // an unparseable bind address - m_client is NULL and netcode dereferences it (crash in
-    // release; assert trap in debug). Both must bail like InsecureConnect() already does.
+    // release; assert trap in debug). Both must bail out.
     ClientServerConfig config;
 
     Address invalidAddress;                     // ADDRESS_NONE -> "NONE" -> netcode_client_create fails
@@ -3227,8 +3227,6 @@ void test_client_disconnect_reason()
     check( client.GetDisconnectReason() == YOJIMBO_CLIENT_DISCONNECT_REASON_DISCONNECTED_BY_SERVER );
 
     // connecting to a server that isn't there times out at the connection request stage.
-    // the insecure connect token expiry is deliberately much longer than the connection
-    // timeout, so this behaves the same way as a secure connect token from a matchmaker.
 
     server.Stop();
 

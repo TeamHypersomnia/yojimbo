@@ -1,3 +1,8 @@
+**Hypersomnia fork - read first.** There are no connect tokens, no `InsecureConnect`, no matcher, no `.github/`
+(CI, sodium-parity), no `fuzz/` and no `tools/` here. Every server has an Ed25519 key; the handshake is described in
+`netcode/netcode.h` (REQUEST, CHALLENGE, RESPONSE). Below is upstream's file: whatever it says about those describes
+upstream yojimbo, not this fork.
+
 <!-- HOT:BEGIN -->
 ## HOT — read before reasoning about this repo
 

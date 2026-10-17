@@ -1,3 +1,7 @@
+> **Hypersomnia fork:** there are no connect tokens, no `InsecureConnect`, no matcher and no fuzzers or CI here.
+> Every server has an Ed25519 key and the handshake is the one described in `netcode/netcode.h` (REQUEST, CHALLENGE,
+> RESPONSE with a sealed box to the server key). Whatever this file says about connect tokens describes upstream yojimbo.
+
 This guide is made to help you getting started with Yojimbo, integrate it into your game and cover some of the basic usages of the library.
 
 Before using any other part of Yojimbo, you must call `InitializeYojimbo()` once at startup, and `ShutdownYojimbo()` once when you are done. This applies to both the client and the server. `InitializeYojimbo()` returns `false` if the library failed to initialize, and `ShutdownYojimbo()` runs some checks for you, such as memory-leak detection in debug builds:

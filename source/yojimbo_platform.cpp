@@ -151,21 +151,20 @@ void yojimbo_sleep( double time )
     usleep( (int) ( time * 1000000 ) );
 }
 
-double yojimbo_time()
+static double yojimbo_monotonic_secs()
 {
-    static double start = -1;
-
-    if ( start == -1 )
-    {
-        timespec ts;
-        clock_gettime( YOJIMBO_MONOTONIC_CLOCK, &ts );
-        start = ts.tv_sec + double( ts.tv_nsec ) / 1000000000.0;
-        return 0.0;
-    }
-
     timespec ts;
     clock_gettime( YOJIMBO_MONOTONIC_CLOCK, &ts );
-    double current = ts.tv_sec + double( ts.tv_nsec ) / 1000000000.0;
+    return ts.tv_sec + double( ts.tv_nsec ) / 1000000000.0;
+}
+
+double yojimbo_time()
+{
+    // Hypersomnia: initialized once even when several servers' threads ask first at the same time
+    // (a function-local static - thread-safe), instead of an unguarded "start == -1" check.
+    static const double start = yojimbo_monotonic_secs();
+
+    double current = yojimbo_monotonic_secs();
     if ( current < start )
         current = start;
     return current - start;

@@ -3740,7 +3740,12 @@ struct netcode_server_t
     struct netcode_address_t receive_from[NETCODE_SERVER_MAX_RECEIVE_PACKETS];
 };
 
-static int server_create_error;
+// Hypersomnia: per thread - several servers of one process are created at once, each reads its own error.
+#ifdef __cplusplus
+static thread_local int server_create_error;
+#else
+static _Thread_local int server_create_error;
+#endif
 
 int netcode_server_create_error()
 {

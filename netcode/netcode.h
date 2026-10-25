@@ -376,6 +376,8 @@ struct netcode_server_config_t
     double handshakes_per_second;
     int (*allow_handshake_callback)(void*,NETCODE_CONST struct netcode_address_t*);
     void * allow_handshake_context;
+    int (*accept_while_refusing_callback)(void*,NETCODE_CONST struct netcode_address_t*,NETCODE_CONST uint8_t*,NETCODE_CONST uint8_t*,NETCODE_CONST uint8_t*);
+    void * accept_while_refusing_context;
 };
 
 /*
@@ -387,6 +389,13 @@ struct netcode_server_config_t
     at most handshakes_per_second of them for all addresses together (bursts of twice that; zero or less: no cap) -
     a flood gets handshakes refused instead of lagging the server. Rules per address are the application's:
     allow_handshake_callback (or NULL), called before the X25519, returns zero to refuse.
+
+    While the server refuses new clients (netcode_server_set_refusing_new_clients), accept_while_refusing_callback
+    (or NULL: everyone refused at once, the challenge says "in a match") decides by who it is: the challenge then
+    doesn't say so, the client's response is opened and the callback gets the address, the connection's binding,
+    the session signature and the user data - what the application checks the client's identity with - and returns
+    nonzero to take the client in anyway. Refused, the response's cookie is used up (its repeats cost nothing)
+    and the client is told "in a match".
 */
 
 void netcode_default_server_config( struct netcode_server_config_t * config );

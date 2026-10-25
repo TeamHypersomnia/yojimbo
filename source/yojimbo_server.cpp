@@ -74,6 +74,8 @@ namespace yojimbo
         netcodeConfig.timeout_seconds = m_config.timeout;
         netcodeConfig.allow_handshake_callback = StaticAllowHandshakeCallback;
         netcodeConfig.allow_handshake_context = this;
+        netcodeConfig.accept_while_refusing_callback = StaticAcceptWhileRefusingCallback;
+        netcodeConfig.accept_while_refusing_context = this;
         netcodeConfig.callback_context = this;
         netcodeConfig.connect_disconnect_callback = StaticConnectDisconnectCallbackFunction;
         netcodeConfig.send_loopback_packet_callback = StaticSendLoopbackPacketCallbackFunction;
@@ -378,6 +380,13 @@ namespace yojimbo
     {
         Server * server = (Server*) context;
         server->SendLoopbackPacketCallbackFunction( clientIndex, packetData, packetBytes, packetSequence );
+    }
+
+    int Server::StaticAcceptWhileRefusingCallback( void * context, const netcode_address_t * from, const uint8_t * binding, const uint8_t * sessionSignature, const uint8_t * userData )
+    {
+        Server * server = (Server*) context;
+        const Address address = AddressFromNetcode( *from );
+        return server->GetAdapter().AcceptWhileRefusing( address, binding, sessionSignature, userData ) ? 1 : 0;
     }
 
     int Server::StaticAllowHandshakeCallback( void * context, const netcode_address_t * from )

@@ -105,6 +105,21 @@ namespace yojimbo
         }
 
         /**
+            Called while the server refuses new clients (Server::SetRefusingNewClients) for a client whose handshake
+            response was opened: its binding, session signature and user data - what proves who it is. Return true
+            to take it in anyway. The default refuses everyone.
+         */
+
+        virtual bool AcceptWhileRefusing( const Address & from, const uint8_t * binding, const uint8_t * sessionSignature, const uint8_t * userData )
+        {
+            (void) from;
+            (void) binding;
+            (void) sessionSignature;
+            (void) userData;
+            return false;
+        }
+
+        /**
             Send one complete netcode.io datagram through the custom transport.
             Called only when UseCustomPacketIO returns true. packetBytes is never larger than
             MaxAdapterPacketBytes, so buffers sized to that constant always fit the datagram.

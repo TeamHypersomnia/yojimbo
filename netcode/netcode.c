@@ -2738,9 +2738,15 @@ static void netcode_client_process_challenge( struct netcode_client_t * client, 
         the whole attempt and this is only the reason it ends with.
     */
 
+    /*
+        Also when it comes for our response: a server refusing by who it is says so only then. Anyone can send
+        this, so it's only the reason a failing attempt ends with - the responses go on, an accepted one still connects.
+    */
+
     if ( flags & NETCODE_CHALLENGE_FLAG_MATCH_IN_PROGRESS )
     {
-        if ( client->server_address_index == 0 && client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST )
+        if ( client->server_address_index == 0 &&
+             ( client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_REQUEST || client->state == NETCODE_CLIENT_STATE_SENDING_CONNECTION_RESPONSE ) )
             client->saw_match_in_progress = 1;
 
         return;
@@ -3691,6 +3697,8 @@ void netcode_default_server_config( struct netcode_server_config_t * config )
     config->handshakes_per_second = NETCODE_DEFAULT_HANDSHAKES_PER_SECOND;
     config->allow_handshake_callback = NULL;
     config->allow_handshake_context = NULL;
+    config->accept_while_refusing_callback = NULL;
+    config->accept_while_refusing_context = NULL;
 }
 
 struct netcode_server_t
@@ -4345,7 +4353,19 @@ static void netcode_server_send_raw( struct netcode_server_t * server, struct ne
     }
 }
 
+static void netcode_server_send_challenge_flagged( struct netcode_server_t * server, struct netcode_address_t * from, uint8_t extra_flags );
+
 static void netcode_server_send_challenge( struct netcode_server_t * server, struct netcode_address_t * from )
+{
+    netcode_server_send_challenge_flagged( server, from, 0 );
+}
+
+/*
+    "In a match" is said by the challenge only when everyone is refused - with an accept_while_refusing_callback
+    the client is let to answer, and told so only once its response says who it is (extra_flags).
+*/
+
+static void netcode_server_send_challenge_flagged( struct netcode_server_t * server, struct netcode_address_t * from, uint8_t extra_flags )
 {
     // the cookie time is the server's monotonic time in milliseconds: no wall clock is involved
 
@@ -4363,9 +4383,12 @@ static void netcode_server_send_challenge( struct netcode_server_t * server, str
 
     netcode_write_bytes( &p, server->public_key, NETCODE_PUBLIC_KEY_BYTES );
 
+    const int refusing_everyone = server->refusing_new_clients && !server->config.accept_while_refusing_callback;
+
     const uint8_t flags =
         ( server->num_connected_clients >= server->max_clients ? NETCODE_CHALLENGE_FLAG_SERVER_FULL : 0 ) |
-        ( server->refusing_new_clients ? NETCODE_CHALLENGE_FLAG_MATCH_IN_PROGRESS : 0 );
+        ( refusing_everyone ? NETCODE_CHALLENGE_FLAG_MATCH_IN_PROGRESS : 0 ) |
+        extra_flags;
     netcode_write_uint8( &p, flags );
 
     netcode_assert( p - packet_data == NETCODE_HANDSHAKE_CHALLENGE_BYTES );
@@ -4556,7 +4579,7 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
         return;
     }
 
-    if ( server->refusing_new_clients )
+    if ( server->refusing_new_clients && !server->config.accept_while_refusing_callback )
     {
         netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server ignored connection response. it takes no new clients now\n" );
         return;
@@ -4619,6 +4642,35 @@ static void netcode_server_process_handshake_response( struct netcode_server_t *
         sodium_memzero( plaintext, sizeof( plaintext ) );
         netcode_server_log_refusal( server, &server->rate_limit_last_logged, "a handshake was refused (too many handshakes for all)" );
         return;
+    }
+
+    /*
+        Refusing new clients, but by who they are: the application decides with what proves the client's identity.
+        Refused, the cookie and the secret are used up - the client's repeats of this response are dropped cheaply -
+        and it's told "in a match".
+    */
+
+    if ( server->refusing_new_clients )
+    {
+        uint8_t binding[NETCODE_BINDING_BYTES];
+        netcode_connection_binding( binding, server->config.protocol_id, server->public_key, connection_secret, cookie );
+
+        const int accepted = server->config.accept_while_refusing_callback( server->config.accept_while_refusing_context, from, binding, session_signature, user_data );
+
+        sodium_memzero( binding, sizeof( binding ) );
+
+        if ( !accepted )
+        {
+            memcpy( server->used_cookies[server->used_cookie_next], mac, NETCODE_MAC_BYTES );
+            memcpy( server->used_secrets[server->used_cookie_next], secret_hash, sizeof( secret_hash ) );
+            server->used_cookie_times[server->used_cookie_next] = server->time;
+            server->used_cookie_next = ( server->used_cookie_next + 1 ) % NETCODE_USED_COOKIES;
+
+            sodium_memzero( plaintext, sizeof( plaintext ) );
+            netcode_printf( NETCODE_LOG_LEVEL_DEBUG, "server refused a client while in a match\n" );
+            netcode_server_send_challenge_flagged( server, from, NETCODE_CHALLENGE_FLAG_MATCH_IN_PROGRESS );
+            return;
+        }
     }
 
     uint8_t client_to_server_key[NETCODE_KEY_BYTES];
@@ -10014,6 +10066,66 @@ void test_handshake_match_in_progress()
     test_wire_destroy();
 }
 
+static int test_accept_while_refusing_answer;
+static int test_accept_while_refusing_calls;
+static uint8_t test_accept_while_refusing_user_data[NETCODE_USER_DATA_BYTES];
+
+static int test_accept_while_refusing( void * context, NETCODE_CONST struct netcode_address_t * from, NETCODE_CONST uint8_t * binding, NETCODE_CONST uint8_t * session_signature, NETCODE_CONST uint8_t * user_data )
+{
+    (void) context;
+    (void) from;
+    check( binding );
+    check( session_signature );
+    check( user_data );
+    memcpy( test_accept_while_refusing_user_data, user_data, NETCODE_USER_DATA_BYTES );
+    ++test_accept_while_refusing_calls;
+    return test_accept_while_refusing_answer;
+}
+
+void test_handshake_accept_while_refusing()
+{
+    test_wire_create( 0 );
+
+    double time = 0.0;
+
+    // a match in progress that lets some in by who they are: the game decides with what the client sent
+
+    test_wire.server->config.accept_while_refusing_callback = test_accept_while_refusing;
+    test_wire.server->config.accept_while_refusing_context = NULL;
+    test_accept_while_refusing_answer = 0;
+    test_accept_while_refusing_calls = 0;
+
+    netcode_server_set_refusing_new_clients( test_wire.server, 1 );
+
+    uint8_t user_data[NETCODE_USER_DATA_BYTES];
+    netcode_random_bytes( user_data, NETCODE_USER_DATA_BYTES );
+
+    NETCODE_CONST char * server_address = "[::1]:40000";
+    test_connect( test_wire.client, 1, &server_address, user_data );
+
+    test_wire_run( &time, 0.1, NETCODE_DEFAULT_CONNECT_TIMEOUT_SECONDS + 1.0 );
+
+    // refused: told "in a match", asked once - the repeats of that response dropped before the game is asked again
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_MATCH_IN_PROGRESS );
+    check( netcode_server_num_connected_clients( test_wire.server ) == 0 );
+    check( test_accept_while_refusing_calls == 1 );
+    check( memcmp( test_accept_while_refusing_user_data, user_data, NETCODE_USER_DATA_BYTES ) == 0 );
+
+    // accepted: connects while the server still refuses everyone else
+
+    test_accept_while_refusing_answer = 1;
+    test_connect( test_wire.client, 1, &server_address, user_data );
+
+    test_wire_run( &time, 0.1, 3.0 );
+
+    check( netcode_client_state( test_wire.client ) == NETCODE_CLIENT_STATE_CONNECTED );
+    check( netcode_server_num_connected_clients( test_wire.server ) == 1 );
+    check( test_accept_while_refusing_calls == 2 );
+
+    test_wire_destroy();
+}
+
 void test_version_info_set_by_the_game()
 {
     // what the game sets is what the handshake carries - zero-filled, never longer than 12 characters
@@ -10215,6 +10327,7 @@ void netcode_test()
         RUN_TEST( test_handshake_forged_challenge_other_key );
         RUN_TEST( test_handshake_version_mismatch );
         RUN_TEST( test_handshake_match_in_progress );
+        RUN_TEST( test_handshake_accept_while_refusing );
         RUN_TEST( test_version_info_set_by_the_game );
         RUN_TEST( test_handshake_rate_limit );
         RUN_TEST( test_handshake_nothing_accumulates );

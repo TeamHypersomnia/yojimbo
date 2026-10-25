@@ -110,16 +110,9 @@ void yojimbo_sleep( double time )
 
 double yojimbo_time()
 {
-    static uint64_t start = 0;
-
-    static mach_timebase_info_data_t timebase_info;
-
-    if ( start == 0 )
-    {
-        mach_timebase_info( &timebase_info );
-        start = mach_absolute_time();
-        return 0.0;
-    }
+    // initialized once, thread-safely, whichever of several servers in one process asks first
+    static const mach_timebase_info_data_t timebase_info = []() { mach_timebase_info_data_t info; mach_timebase_info( &info ); return info; }();
+    static const uint64_t start = mach_absolute_time();
 
     uint64_t current = mach_absolute_time();
 
@@ -187,18 +180,12 @@ void yojimbo_sleep( double time )
     Sleep( milliseconds );
 }
 
-static bool timer_initialized = false;
-static LARGE_INTEGER timer_frequency;
-static LARGE_INTEGER timer_start;
-
 double yojimbo_time()
 {
-    if ( !timer_initialized )
-    {
-        QueryPerformanceFrequency( &timer_frequency );
-        QueryPerformanceCounter( &timer_start );
-        timer_initialized = true;
-    }
+    // initialized once, thread-safely, whichever of several servers in one process asks first
+    static const LARGE_INTEGER timer_frequency = []() { LARGE_INTEGER f; QueryPerformanceFrequency( &f ); return f; }();
+    static const LARGE_INTEGER timer_start = []() { LARGE_INTEGER t; QueryPerformanceCounter( &t ); return t; }();
+
     LARGE_INTEGER now;
     QueryPerformanceCounter( &now );
     if ( now.QuadPart < timer_start.QuadPart )
